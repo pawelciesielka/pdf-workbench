@@ -6,26 +6,27 @@ import type { CitationView, Segment } from "../lib/api";
 const OUTSIDE_MARKER = /\[\[spoza-dokumentu\]\]/g;
 
 /** Skleja bloki odpowiedzi w jeden Markdown, wstawiając znaczniki Cytatów jako linki #cite-N. */
-function toMarkdown(segments: Segment[]): { md: string; citations: CitationView[] } {
+function toMarkdown(segments: Segment[], showDocNames: boolean): { md: string; citations: CitationView[] } {
   const citations: CitationView[] = [];
   let md = "";
   for (const seg of segments) {
     md += seg.text.replace(OUTSIDE_MARKER, `[${t("chat.outside")}](#outside)`);
     const seen = new Set<string>();
     for (const c of seg.citations) {
-      const key = `${c.page}`;
+      const key = `${c.documentHash}:${c.page}`;
       if (seen.has(key)) continue;
       seen.add(key);
       citations.push(c);
-      const label = c.page ? t("chat.page", { page: c.page }) : "↗";
-      md += ` [${label}](#cite-${citations.length - 1})`;
+      const page = c.page ? t("chat.page", { page: c.page }) : "↗";
+      const doc = showDocNames && c.documentName ? `${c.documentName.replace(/\.pdf$/i, "").slice(0, 24)}, ` : "";
+      md += ` [${(doc + page).replace(/[[\]]/g, "")}](#cite-${citations.length - 1})`;
     }
   }
   return { md, citations };
 }
 
-export function MessageBody({ segments, onCitation }: { segments: Segment[]; onCitation(c: CitationView): void }) {
-  const { md, citations } = toMarkdown(segments);
+export function MessageBody({ segments, onCitation, showDocNames = false }: { segments: Segment[]; onCitation(c: CitationView): void; showDocNames?: boolean }) {
+  const { md, citations } = toMarkdown(segments, showDocNames);
   return (
     <div className="markdown">
       <ReactMarkdown
@@ -56,5 +57,8 @@ export function MessageBody({ segments, onCitation }: { segments: Segment[]; onC
 }
 
 export function plainText(segments: Segment[]): string {
-  return segments.map((s) => s.text).join("").replace(OUTSIDE_MARKER, `${t("chat.outside")}:`);
+  return segments
+    .map((s) => s.text)
+    .join("")
+    .replace(OUTSIDE_MARKER, `${t("chat.outside")}:`);
 }

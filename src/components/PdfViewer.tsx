@@ -1,11 +1,34 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { loadViewerModule, type PDFDocumentProxy } from "../lib/pdf";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { Mark, Rect } from "../lib/editing";
+import { newMarkId } from "../lib/editing";
+import { loadViewerModule, pdfjsLib, type PDFDocumentProxy } from "../lib/pdf";
 
-type Viewer = InstanceType<Awaited<ReturnType<typeof loadViewerModule>>["PDFViewer"]>;
-type Bus = InstanceType<Awaited<ReturnType<typeof loadViewerModule>>["EventBus"]>;
+type Mod = Awaited<ReturnType<typeof loadViewerModule>>;
+type Viewer = InstanceType<Mod["PDFViewer"]>;
+type Bus = InstanceType<Mod["EventBus"]>;
+// Menedżer edytorów adnotacji pdf.js (typ wewnętrzny biblioteki).
+type UiManager = { undo(): void; redo(): void; highlightSelection(method?: string): void };
+
+export type EditorMode = "none" | "highlight" | "freetext" | "ink" | "stamp" | "redact";
+
+const EDITOR_TYPES: Record<Exclude<EditorMode, "redact">, number> = {
+  none: pdfjsLib.AnnotationEditorType.NONE,
+  highlight: pdfjsLib.AnnotationEditorType.HIGHLIGHT,
+  freetext: pdfjsLib.AnnotationEditorType.FREETEXT,
+  ink: pdfjsLib.AnnotationEditorType.INK,
+  stamp: pdfjsLib.AnnotationEditorType.STAMP,
+};
+
+export const HIGHLIGHT_COLORS: Record<string, string> = {
+  yellow: "#FFFF98",
+  green: "#53FFBC",
+  blue: "#80EBFF",
+  pink: "#FFCBE6",
+};
 
 export interface PdfViewerHandle {
   goToPage(n: number): void;
+  currentPage(): number;
   zoomIn(): void;
   zoomOut(): void;
   fit(mode: "page-width" | "page-fit"): void;
@@ -13,6 +36,11 @@ export interface PdfViewerHandle {
   clearFind(): void;
   showCitation(page: number, text: string): void;
   refresh(): void;
+  undoAnnotation(): boolean;
+  redoAnnotation(): boolean;
+  setHighlightColor(color: string): void;
+  highlightText(page: number, text: string, color: string): Promise<void>;
+  selectionMarks(kind: Mark["kind"]): Mark[];
 }
 
 export interface SelectionInfo {
@@ -24,10 +52,16 @@ export interface SelectionInfo {
 
 interface Props {
   doc: PDFDocumentProxy;
+  initialPage?: number;
+  editorMode: EditorMode;
+  marks: Mark[];
+  onAddMark(m: Mark): void;
+  onRemoveMark(id: string): void;
   onPageChange(page: number): void;
   onScaleChange(scale: number): void;
   onFindCount(current: number, total: number): void;
   onSelection(sel: SelectionInfo | null): void;
+  onEditorState(s: { canUndo: boolean; canRedo: boolean }): void;
 }
 
 const MIN_SCALE = 0.25;
@@ -37,11 +71,59 @@ function normalize(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/** Szuka tekstu w warstwie tekstu strony i zwraca zakres DOM (najpierw z odstępami, potem bez). */
+function findRange(layer: HTMLElement, query: string): Range | null {
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+  for (const strip of [false, true]) {
+    let hay = "";
+    const map: [Text, number][] = [];
+    let prevSpace = true;
+    for (const node of nodes) {
+      const data = node.data;
+      for (let i = 0; i < data.length; i++) {
+        const ch = data[i];
+        if (/\s/.test(ch)) {
+          if (strip || prevSpace) continue;
+          hay += " ";
+          prevSpace = true;
+        } else {
+          hay += ch.toLocaleLowerCase("pl");
+          prevSpace = false;
+        }
+        map.push([node, i]);
+      }
+      if (!strip && !prevSpace) {
+        hay += " ";
+        map.push([node, data.length]);
+        prevSpace = true;
+      }
+    }
+    const q = strip ? query.replace(/\s+/g, "").toLocaleLowerCase("pl") : normalize(query).toLocaleLowerCase("pl");
+    const at = hay.indexOf(q);
+    if (at >= 0 && q.length > 0) {
+      const [sn, so] = map[at];
+      const [en, eo] = map[at + q.length - 1];
+      const range = document.createRange();
+      range.setStart(sn, so);
+      range.setEnd(en, Math.min(eo + 1, en.data.length));
+      return range;
+    }
+  }
+  return null;
+}
+
 export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(props, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const busRef = useRef<Bus | null>(null);
+  const uiRef = useRef<UiManager | null>(null);
+  const editorState = useRef({ canUndo: false, canRedo: false });
+  const [layout, setLayout] = useState(0); // zmiana wymusza przeliczenie nakładki oznaczeń
+  const [draft, setDraft] = useState<{ page: number; x0: number; y0: number; x1: number; y1: number } | null>(null);
   const cb = useRef(props);
   cb.current = props;
 
@@ -59,13 +141,35 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         eventBus,
         linkService,
         findController,
+        annotationEditorMode: pdfjsLib.AnnotationEditorType.NONE,
+        annotationEditorHighlightColors: Object.entries(HIGHLIGHT_COLORS)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(","),
       });
       linkService.setViewer(viewer);
       eventBus.on("pagesinit", () => {
         viewer.currentScaleValue = "page-width";
+        if (cb.current.initialPage && cb.current.initialPage > 1) viewer.currentPageNumber = Math.min(cb.current.initialPage, viewer.pagesCount);
+        applyMode(cb.current.editorMode);
+      });
+      eventBus.on("annotationeditoruimanager", (e: { uiManager: UiManager }) => {
+        uiRef.current = e.uiManager;
+        if (import.meta.env.DEV) (window as unknown as { __pdfui: unknown }).__pdfui = e.uiManager;
+      });
+      // pdf.js prosi aplikację o zmianę trybu (np. przy podświetlaniu zaznaczenia) — obsługujemy to sami.
+      eventBus.on("showannotationeditorui", (e: { mode: number }) => {
+        viewer.annotationEditorMode = { mode: e.mode };
+      });
+      eventBus.on("editingstateschanged", (e: { details: { hasSomethingToUndo?: boolean; hasSomethingToRedo?: boolean } }) => {
+        editorState.current = { canUndo: !!e.details.hasSomethingToUndo, canRedo: !!e.details.hasSomethingToRedo };
+        cb.current.onEditorState(editorState.current);
       });
       eventBus.on("pagechanging", (e: { pageNumber: number }) => cb.current.onPageChange(e.pageNumber));
-      eventBus.on("scalechanging", (e: { scale: number }) => cb.current.onScaleChange(e.scale));
+      eventBus.on("scalechanging", (e: { scale: number }) => {
+        cb.current.onScaleChange(e.scale);
+        setTimeout(() => setLayout((n) => n + 1), 0);
+      });
+      eventBus.on("pagesloaded", () => setLayout((n) => n + 1));
       const onCount = (e: { matchesCount?: { current: number; total: number } }) => {
         if (e.matchesCount) cb.current.onFindCount(e.matchesCount.current, e.matchesCount.total);
       };
@@ -80,15 +184,29 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
       disposed = true;
       viewerRef.current?.setDocument(null as unknown as PDFDocumentProxy);
       viewerRef.current = null;
+      uiRef.current = null;
     };
   }, [props.doc]);
 
-  // Zaznaczenie tekstu → pływający przycisk „Zapytaj o to”.
+  const applyMode = (mode: EditorMode) => {
+    const v = viewerRef.current;
+    if (!v) return;
+    const type = mode === "redact" ? EDITOR_TYPES.none : EDITOR_TYPES[mode];
+    try {
+      if ((v.annotationEditorMode as unknown as number) !== type) v.annotationEditorMode = { mode: type };
+    } catch {
+      /* dokument jeszcze się ładuje — tryb zostanie ustawiony po pagesinit */
+    }
+  };
+  useEffect(() => applyMode(props.editorMode), [props.editorMode]);
+
+  // Zaznaczenie tekstu → pływające przyciski (pytanie, Korekta, Redakcja).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onUp = () => {
       setTimeout(() => {
+        if (cb.current.editorMode !== "none") return;
         const sel = window.getSelection();
         const text = sel ? normalize(sel.toString()) : "";
         if (!sel || text.length < 2 || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
@@ -125,6 +243,78 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
+  /** Strona pod punktem ekranu i jej prostokąt. */
+  const pageAt = (x: number, y: number): { page: number; rect: DOMRect } | null => {
+    const pages = innerRef.current?.querySelectorAll<HTMLElement>(".page") ?? [];
+    for (const p of pages) {
+      const r = p.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { page: Number(p.dataset.pageNumber), rect: r };
+    }
+    return null;
+  };
+
+  const clientToPdf = useCallback((page: number, pageRect: DOMRect, ax: number, ay: number, bx: number, by: number): Rect | null => {
+    const view = viewerRef.current?.getPageView(page - 1);
+    if (!view) return null;
+    const [px0, py0] = view.viewport.convertToPdfPoint(ax - pageRect.left, ay - pageRect.top);
+    const [px1, py1] = view.viewport.convertToPdfPoint(bx - pageRect.left, by - pageRect.top);
+    return [Math.min(px0, px1), Math.min(py0, py1), Math.max(px0, px1), Math.max(py0, py1)];
+  }, []);
+
+  // Rysowanie prostokątów Redakcji.
+  const onLayerDown = (e: React.MouseEvent) => {
+    if (props.editorMode !== "redact") return;
+    const hit = pageAt(e.clientX, e.clientY);
+    if (!hit) return;
+    e.preventDefault();
+    setDraft({ page: hit.page, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY });
+  };
+  const onLayerMove = (e: React.MouseEvent) => {
+    if (draft) setDraft({ ...draft, x1: e.clientX, y1: e.clientY });
+  };
+  const onLayerUp = () => {
+    if (!draft) return;
+    const pageEl = innerRef.current?.querySelector<HTMLElement>(`.page[data-page-number="${draft.page}"]`);
+    if (pageEl && Math.abs(draft.x1 - draft.x0) > 4 && Math.abs(draft.y1 - draft.y0) > 4) {
+      const r = pageEl.getBoundingClientRect();
+      const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+      const rect = clientToPdf(
+        draft.page,
+        r,
+        clamp(draft.x0, r.left, r.right),
+        clamp(draft.y0, r.top, r.bottom),
+        clamp(draft.x1, r.left, r.right),
+        clamp(draft.y1, r.top, r.bottom),
+      );
+      if (rect) cb.current.onAddMark({ id: newMarkId(), page: draft.page, rect, kind: "redact" });
+    }
+    setDraft(null);
+  };
+
+  // Położenie oznaczeń w pikselach nakładki.
+  const markBoxes = (() => {
+    void layout;
+    const layer = layerRef.current;
+    const v = viewerRef.current;
+    if (!layer || !v) return [];
+    const lr = layer.getBoundingClientRect();
+    return props.marks.flatMap((m) => {
+      const pageEl = innerRef.current?.querySelector<HTMLElement>(`.page[data-page-number="${m.page}"]`);
+      const view = v.getPageView(m.page - 1);
+      if (!pageEl || !view) return [];
+      const pr = pageEl.getBoundingClientRect();
+      const [x1, y1] = view.viewport.convertToViewportPoint(m.rect[0], m.rect[1]);
+      const [x2, y2] = view.viewport.convertToViewportPoint(m.rect[2], m.rect[3]);
+      return [{ m, left: pr.left - lr.left + Math.min(x1, x2), top: pr.top - lr.top + Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) }];
+    });
+  })();
+
+  useEffect(() => {
+    const onResize = () => setLayout((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   useImperativeHandle(ref, () => {
     const dispatchFind = (query: string, again: boolean, previous: boolean) =>
       busRef.current?.dispatch("find", {
@@ -137,11 +327,36 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         findPrevious: previous,
         matchDiacritics: false,
       });
+    const waitForTextLayer = (page: number) =>
+      new Promise<HTMLElement>((resolve, reject) => {
+        const check = () => {
+          const layer = innerRef.current?.querySelector<HTMLElement>(`.page[data-page-number="${page}"] .textLayer`);
+          if (layer && layer.querySelector("span")) {
+            resolve(layer);
+            return true;
+          }
+          return false;
+        };
+        if (check()) return;
+        const bus = busRef.current;
+        const onRendered = (e: { pageNumber: number }) => {
+          if (e.pageNumber === page && check()) {
+            bus?.off("textlayerrendered", onRendered);
+            clearTimeout(timer);
+          }
+        };
+        bus?.on("textlayerrendered", onRendered);
+        const timer = setTimeout(() => {
+          bus?.off("textlayerrendered", onRendered);
+          if (!check()) reject(new Error(`Strona ${page} nie ma warstwy tekstu (może to skan — użyj OCR).`));
+        }, 5000);
+      });
     return {
       goToPage(n) {
         const v = viewerRef.current;
         if (v) v.currentPageNumber = Math.min(Math.max(1, n), v.pagesCount);
       },
+      currentPage: () => viewerRef.current?.currentPageNumber ?? 1,
       zoomIn() {
         const v = viewerRef.current;
         if (v) v.currentScale = Math.min(MAX_SCALE, v.currentScale * 1.2);
@@ -163,7 +378,6 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         const v = viewerRef.current;
         if (!v) return;
         v.currentPageNumber = page;
-        // Podświetlamy początek cytowanego fragmentu wyszukiwaniem frazy.
         const snippet = normalize(text).split(" ").slice(0, 10).join(" ");
         if (snippet.length >= 3) setTimeout(() => dispatchFind(snippet, false, false), 50);
       },
@@ -173,13 +387,93 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         const value = v.currentScaleValue;
         v.currentScaleValue = value;
         v.update();
+        setLayout((n) => n + 1);
+      },
+      undoAnnotation() {
+        if (!uiRef.current || !editorState.current.canUndo) return false;
+        uiRef.current.undo();
+        return true;
+      },
+      redoAnnotation() {
+        if (!uiRef.current || !editorState.current.canRedo) return false;
+        uiRef.current.redo();
+        return true;
+      },
+      setHighlightColor(color) {
+        busRef.current?.dispatch("switchannotationeditorparams", {
+          source: null,
+          type: pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
+          value: HIGHLIGHT_COLORS[color] ?? color,
+        });
+      },
+      async highlightText(page, text, color) {
+        const v = viewerRef.current;
+        const ui = uiRef.current;
+        if (!v || !ui) throw new Error("Podgląd nie jest gotowy.");
+        if (page < 1 || page > v.pagesCount) throw new Error(`Dokument ma ${v.pagesCount} stron.`);
+        v.currentPageNumber = page;
+        const layer = await waitForTextLayer(page);
+        const range = findRange(layer, text);
+        if (!range) throw new Error(`Nie znaleziono tekstu „${text.slice(0, 60)}” na stronie ${page}.`);
+        this.setHighlightColor(color);
+        const sel = window.getSelection()!;
+        sel.removeAllRanges();
+        sel.addRange(range);
+        ui.highlightSelection("main_toolbar");
+        // pdf.js przełącza się asynchronicznie w tryb podświetlania i dopiero wtedy tworzy edytor.
+        await new Promise((r) => setTimeout(r, 450));
+        sel.removeAllRanges();
+        applyMode(cb.current.editorMode);
+      },
+      selectionMarks(kind) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return [];
+        const out: Mark[] = [];
+        for (const r of sel.getRangeAt(0).getClientRects()) {
+          if (r.width < 1 || r.height < 1) continue;
+          const hit = pageAt(r.left + r.width / 2, r.top + r.height / 2);
+          if (!hit) continue;
+          const rect = clientToPdf(hit.page, hit.rect, r.left, r.top, r.right, r.bottom);
+          if (rect) out.push({ id: newMarkId(), page: hit.page, rect, kind });
+        }
+        return out;
       },
     };
-  }, []);
+  }, [clientToPdf]);
+
+  const draftBox = (() => {
+    if (!draft || !layerRef.current) return null;
+    const lr = layerRef.current.getBoundingClientRect();
+    return {
+      left: Math.min(draft.x0, draft.x1) - lr.left,
+      top: Math.min(draft.y0, draft.y1) - lr.top,
+      width: Math.abs(draft.x1 - draft.x0),
+      height: Math.abs(draft.y1 - draft.y0),
+    };
+  })();
 
   return (
-    <div className="pdf-container" ref={containerRef}>
+    <div className={`pdf-container ${props.editorMode === "redact" ? "mode-redact" : ""}`} ref={containerRef}>
       <div className="pdfViewer" ref={innerRef} />
+      <div
+        ref={layerRef}
+        className="mark-layer"
+        style={{ height: innerRef.current?.scrollHeight ?? 0, pointerEvents: props.editorMode === "redact" ? "auto" : "none" }}
+        onMouseDown={onLayerDown}
+        onMouseMove={onLayerMove}
+        onMouseUp={onLayerUp}
+        onMouseLeave={onLayerUp}
+      >
+        {markBoxes.map(({ m, ...box }) => (
+          <div key={m.id} className={`mark mark-${m.kind}`} style={box} title={m.kind === "correct" ? `Korekta: ${m.text}` : "Redakcja"}>
+            {m.kind === "correct" && <span className="mark-text">{m.text}</span>}
+            <button className="mark-remove" onMouseDown={(e) => e.stopPropagation()} onClick={() => props.onRemoveMark(m.id)}>
+              ✕
+            </button>
+          </div>
+        ))}
+        {draftBox && <div className="mark mark-draft" style={draftBox} />}
+      </div>
     </div>
   );
 });

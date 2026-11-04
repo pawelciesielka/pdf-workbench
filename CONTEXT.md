@@ -14,9 +14,43 @@ _Unikaj_: plik, PDF (w znaczeniu domenowym)
 Dokument, który wcześniej był pod tą samą ścieżką co obecny, zanim zmieniono treść pliku; jego Rozmowy są dostępne tylko do odczytu.
 _Unikaj_: stara wersja, historia pliku
 
-**Przestrzeń robocza** (poza MVP):
-Nazwany zbiór Dokumentów, o których można prowadzić wspólne Rozmowy.
+**Przestrzeń robocza**:
+Nazwany zbiór Dokumentów, o których można prowadzić wspólne Rozmowy; Rozmowa zapamiętuje skład Dokumentów z chwili jej rozpoczęcia.
 _Unikaj_: projekt, folder, workspace
+
+**Wersja z edycji**:
+Poprzednia wersja powstała dlatego, że użytkownik zapisał zmiany w aplikacji; pamięta, z którego Dokumentu powstała i kiedy.
+_Unikaj_: rewizja, kopia
+
+### Edycja
+
+**Edycja**:
+Niezapisana zmiana Dokumentu w aplikacji (Adnotacja, operacja na stronach, wypełnienie formularza, OCR, Redakcja, Korekta); staje się nowym Dokumentem dopiero po zapisie.
+_Unikaj_: modyfikacja, zmiana pliku
+
+**Adnotacja**:
+Element dodany na wierzch strony (podświetlenie, notatka tekstowa, rysunek, obraz), który nie zmienia treści strony.
+_Unikaj_: komentarz, znacznik
+
+**Redakcja**:
+Trwałe usunięcie wskazanych fragmentów z Dokumentu: strona jest zastępowana obrazem z zaczernionymi miejscami, a pozostały tekst odtwarza OCR.
+_Unikaj_: zaczernienie, anonimizacja, maskowanie
+
+**Korekta**:
+Zastąpienie wskazanego fragmentu tekstu nowym tekstem w tym samym miejscu strony, technicznie jak Redakcja z wpisanym nowym tekstem.
+_Unikaj_: edycja tekstu, poprawka
+
+**OCR**:
+Rozpoznanie tekstu na stronie bez warstwy tekstu (skan) i dodanie niewidocznego tekstu, dzięki któremu strona jest przeszukiwalna.
+_Unikaj_: skanowanie, rozpoznawanie
+
+**Porównanie**:
+Zestawienie tekstu dwóch Dokumentów słowo po słowie, ze wskazaniem stron, na których coś dodano, usunięto lub zmieniono.
+_Unikaj_: diff, różnice
+
+**Propozycja zmiany**:
+Edycja zaproponowana przez AI w Rozmowie, która czeka na „Zastosuj” użytkownika (usunięcie lub przestawienie stron, Redakcja).
+_Unikaj_: sugestia, akcja AI
 
 ### Rozmowy
 

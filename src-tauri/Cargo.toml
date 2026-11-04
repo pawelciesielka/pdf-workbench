@@ -20,11 +20,14 @@ serde_json = "1"
 rusqlite = { version = "0.41", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["fs"] }
+tokio = { version = "1", features = ["fs", "sync", "time"] }
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
 keyring = { version = "3", features = ["windows-native"] }
+lopdf = "0.47"
+urlencoding = "2"
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Win32_System_WinRT"] }
 
 [profile.release]
 codegen-units = 1

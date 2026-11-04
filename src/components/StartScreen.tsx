@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { t } from "../i18n";
 import { api, type RecentItem } from "../lib/api";
 
-export function StartScreen({ onOpen, onPick }: { onOpen(path: string): void; onPick(): void }) {
+export function StartScreen({ onOpen, onPick, onWorkspaces }: { onOpen(path: string): void; onPick(): void; onWorkspaces(): void }) {
   const [recent, setRecent] = useState<RecentItem[]>([]);
   useEffect(() => {
     api.listRecent().then(setRecent).catch(() => setRecent([]));
@@ -19,9 +19,14 @@ export function StartScreen({ onOpen, onPick }: { onOpen(path: string): void; on
         <div className="start-icon">📄</div>
         <h1>{t("start.title")}</h1>
         <p>{t("start.hint")}</p>
-        <button className="primary big" onClick={onPick}>
-          {t("start.open")}
-        </button>
+        <div className="start-buttons">
+          <button className="primary big" onClick={onPick}>
+            {t("start.open")}
+          </button>
+          <button className="big" onClick={onWorkspaces}>
+            🗂 {t("ws.title")}
+          </button>
+        </div>
         {recent.length > 0 && (
           <div className="recent">
             <h2>{t("start.recent")}</h2>
