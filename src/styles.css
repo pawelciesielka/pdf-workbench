@@ -949,15 +949,20 @@ textarea:focus {
   outline: 2px solid #d92d20;
 }
 .mark-correct {
-  background: rgba(255, 255, 255, 0.9);
-  outline: 2px dashed var(--accent);
-  overflow: hidden;
+  background: #fff;
+  overflow: visible;
+}
+.mark-correct:hover {
+  outline: 1px dashed var(--accent);
 }
 .mark-text {
-  font-size: 11px;
+  display: block;
   color: #1d2330;
-  padding: 0 2px;
+  line-height: 1;
   white-space: nowrap;
+  background: #fff;
+  width: max-content;
+  min-width: 100%;
 }
 .mark-draft {
   border: 2px dashed #d92d20;
@@ -1359,4 +1364,18 @@ textarea:focus {
 .text-style .mode-hint {
   flex-shrink: 1;
   min-width: 0;
+}
+
+.font-choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.font-choice button.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
 }

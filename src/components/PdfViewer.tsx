@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Mark, Rect } from "../lib/editing";
-import { newMarkId } from "../lib/editing";
+import { MARK_FONTS, newMarkId } from "../lib/editing";
 import type { EditOp, PageObject } from "../lib/api";
 import { loadViewerModule, pdfjsLib, type PDFDocumentProxy } from "../lib/pdf";
 import { ObjectLayer, type LayerGeom, type TextStyle } from "./ObjectLayer";
@@ -46,6 +46,8 @@ export interface PdfViewerHandle {
   setHighlightColor(color: string): void;
   highlightText(page: number, text: string, color: string): Promise<void>;
   selectionMarks(kind: Mark["kind"]): Mark[];
+  /** Rozszerza zaznaczenie do całych słów; zwraca tekst i przybliżony krój. */
+  expandSelectionToWords(): { text: string; font: "serif" | "sans" } | null;
 }
 
 export interface SelectionInfo {
@@ -455,6 +457,31 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         sel.removeAllRanges();
         applyMode(cb.current.editorMode);
       },
+      expandSelectionToWords() {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return null;
+        const r = sel.getRangeAt(0);
+        const isWord = (ch: string | undefined) => !!ch && !/\s/.test(ch);
+        const range = r.cloneRange();
+        if (range.startContainer.nodeType === Node.TEXT_NODE) {
+          const t = range.startContainer as Text;
+          let o = range.startOffset;
+          while (o > 0 && isWord(t.data[o - 1])) o--;
+          range.setStart(t, o);
+        }
+        if (range.endContainer.nodeType === Node.TEXT_NODE) {
+          const t = range.endContainer as Text;
+          let o = range.endOffset;
+          while (o < t.data.length && isWord(t.data[o])) o++;
+          range.setEnd(t, o);
+        }
+        sel.removeAllRanges();
+        sel.addRange(range);
+        const el = (range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : (range.startContainer as Element)) as HTMLElement | null;
+        const fam = el ? getComputedStyle(el).fontFamily.toLowerCase() : "";
+        const font = /sans|arial|helvetica|calibri|verdana|segoe/.test(fam) ? "sans" : /serif|times|cambria|georgia|garamond/.test(fam) ? "serif" : "sans";
+        return { text: normalize(sel.toString()), font };
+      },
       selectionMarks(kind) {
         const sel = window.getSelection();
         if (!sel || sel.rangeCount === 0) return [];
@@ -533,7 +560,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
       >
         {markBoxes.map(({ m, ...box }) => (
           <div key={m.id} className={`mark mark-${m.kind}`} style={box} title={m.kind === "correct" ? `Korekta: ${m.text}` : "Redakcja"}>
-            {m.kind === "correct" && <span className="mark-text">{m.text}</span>}
+            {m.kind === "correct" && (
+              <span className="mark-text" style={{ fontSize: Math.max(6, box.height * 0.82), fontFamily: MARK_FONTS[m.font ?? "sans"] }}>
+                {m.text}
+              </span>
+            )}
             <button className="mark-remove" onMouseDown={(e) => e.stopPropagation()} onClick={() => props.onRemoveMark(m.id)}>
               ✕
             </button>

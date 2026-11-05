@@ -12,7 +12,16 @@ export interface Mark {
   rect: Rect;
   kind: "redact" | "correct";
   text?: string;
+  /** Korekta: tekst, który jest zastępowany (do wyliczenia linii bazowej i rozmiaru). */
+  original?: string;
+  /** Korekta: krój nowego tekstu. */
+  font?: "serif" | "sans";
 }
+
+export const MARK_FONTS = {
+  serif: 'Cambria, "Times New Roman", Georgia, serif',
+  sans: 'Calibri, Arial, "Segoe UI", sans-serif',
+} as const;
 
 const copy = (d: Uint8Array) => d.slice();
 let markSeq = 0;
@@ -134,14 +143,137 @@ export function scannedPages(pageTexts: string[]): number[] {
   return pageTexts.flatMap((t, i) => (t.replace(/\s/g, "").length < 20 ? [i + 1] : []));
 }
 
-function fitText(ctx: CanvasRenderingContext2D, text: string, width: number, height: number) {
-  let size = Math.max(6, height * 0.78);
-  ctx.font = `${size}px Arial, "Segoe UI", sans-serif`;
-  while (size > 6 && ctx.measureText(text).width > width) {
-    size *= 0.92;
-    ctx.font = `${size}px Arial, "Segoe UI", sans-serif`;
+const luma = (d: Uint8ClampedArray, i: number) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+const rgb = (r: number, g: number, b: number) => `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+
+/**
+ * Analiza skanu pod Korektą: kolor papieru, kolor tekstu i pionowy zasięg „atramentu”
+ * (pierwszy i ostatni wiersz z ciemnymi pikselami w pasie wokół oznaczenia).
+ */
+function analyzeInk(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+  const pad = Math.round(h * 0.35);
+  const rx = Math.max(0, Math.floor(x));
+  const ry = Math.max(0, Math.floor(y - pad));
+  const rw = Math.max(1, Math.min(ctx.canvas.width - rx, Math.ceil(w)));
+  const rh = Math.max(1, Math.min(ctx.canvas.height - ry, Math.ceil(h + 2 * pad)));
+  const d = ctx.getImageData(rx, ry, rw, rh).data;
+  const lums: number[] = [];
+  for (let i = 0; i < d.length; i += 4) lums.push(luma(d, i));
+  const sorted = [...lums].sort((a, b) => a - b);
+  const paperLum = sorted[Math.floor(sorted.length * 0.85)] ?? 255;
+  const inkThreshold = paperLum - Math.max(50, paperLum * 0.3);
+  let bg = [0, 0, 0, 0];
+  const inkPx: number[] = [];
+  const rowInk = new Array(rh).fill(0);
+  let left = rw;
+  let right = -1;
+  for (let py = 0; py < rh; py++) {
+    for (let px = 0; px < rw; px++) {
+      const i = (py * rw + px) * 4;
+      const l = lums[i / 4];
+      if (l >= paperLum - 12) bg = [bg[0] + d[i], bg[1] + d[i + 1], bg[2] + d[i + 2], bg[3] + 1];
+      if (l < inkThreshold) {
+        rowInk[py]++;
+        inkPx.push(i);
+        left = Math.min(left, px);
+        right = Math.max(right, px);
+      }
+    }
   }
-  return size;
+  // Pas atramentu: ciągły zakres wierszy z tuszem obejmujący środek oznaczenia (bez sąsiednich linii).
+  const minInk = Math.max(1, Math.round(rw * 0.004));
+  const mid = Math.min(rh - 1, Math.round(pad + h / 2));
+  let top = -1;
+  let bottom = -1;
+  let start = mid;
+  if (rowInk[start] < minInk) {
+    for (let k = 1; k < rh; k++) {
+      if (mid - k >= 0 && rowInk[mid - k] >= minInk) {
+        start = mid - k;
+        break;
+      }
+      if (mid + k < rh && rowInk[mid + k] >= minInk) {
+        start = mid + k;
+        break;
+      }
+    }
+  }
+  if (rowInk[start] >= minInk) {
+    top = start;
+    bottom = start;
+    while (top > 0 && rowInk[top - 1] >= minInk) top--;
+    while (bottom < rh - 1 && rowInk[bottom + 1] >= minInk) bottom++;
+  }
+  // Kolor tekstu: średnia z najciemniejszej ~30% pikseli tuszu (bez wygładzonych krawędzi liter).
+  inkPx.sort((a, b) => lums[a / 4] - lums[b / 4]);
+  const core = inkPx.slice(0, Math.max(1, Math.round(inkPx.length * 0.3)));
+  const fg = core.reduce((acc, i) => [acc[0] + d[i], acc[1] + d[i + 1], acc[2] + d[i + 2], acc[3] + 1], [0, 0, 0, 0]);
+  return {
+    paper: bg[3] ? rgb(bg[0] / bg[3], bg[1] / bg[3], bg[2] / bg[3]) : "#fff",
+    ink: inkPx.length && fg[3] ? rgb(fg[0] / fg[3], fg[1] / fg[3], fg[2] / fg[3]) : "#000",
+    top: top >= 0 ? ry + top : null,
+    bottom: bottom >= 0 ? ry + bottom + 1 : null,
+    left: right >= 0 ? rx + left : null,
+  };
+}
+
+/** Ile miejsca w poziomie jest od początku oznaczenia do następnego tekstu w tym samym wierszu (lub marginesu). */
+function roomToRight(ctx: CanvasRenderingContext2D, x: number, w: number, top: number, bottom: number, em: number) {
+  const W = ctx.canvas.width;
+  const margin = Math.round(W * 0.06);
+  const from = Math.min(W - 1, Math.ceil(x + w + em * 0.15));
+  const to = W - margin;
+  if (to <= from) return Math.max(w, to - x);
+  const y0 = Math.max(0, Math.floor(top));
+  const hh = Math.max(1, Math.min(ctx.canvas.height - y0, Math.ceil(bottom - top)));
+  const d = ctx.getImageData(from, y0, to - from, hh).data;
+  const cols = to - from;
+  for (let cx = 0; cx < cols; cx++) {
+    for (let cy = 0; cy < hh; cy++) {
+      const i = (cy * cols + cx) * 4;
+      if (luma(d, i) < 140) return from + cx - em * 0.3 - x;
+    }
+  }
+  return to - x;
+}
+
+const ASCENDERS = /[A-ZĄĆĘŁŃÓŚŹŻ0-9bdfhklłtćśźżó!?()\[\]{}|\/'"%&$#@]/;
+const DESCENDERS = /[gjpqyęą,;()\[\]{}|]/;
+
+/** Korekta na obrazie strony: łata w kolorze papieru i nowy tekst dopasowany do wysokości liter skanu. */
+function drawCorrection(ctx: CanvasRenderingContext2D, m: Mark, x: number, y: number, w: number, h: number) {
+  const text = m.text ?? "";
+  const original = m.original ?? text;
+  const a = analyzeInk(ctx, x, y, w, h);
+  const asc = ASCENDERS.test(original);
+  const desc = DESCENDERS.test(original);
+  let em: number;
+  let baseline: number;
+  if (a.top !== null && a.bottom !== null && a.bottom - a.top > 2) {
+    const inkH = a.bottom - a.top;
+    // Proporcje typowych krojów: wysokość wersalików/wydłużeń ≈ 0,68 em, x ≈ 0,47 em, zejście ≈ 0,21 em.
+    em = inkH / ((asc ? 0.68 : 0.47) + (desc ? 0.21 : 0));
+    baseline = a.bottom - (desc ? 0.21 * em : 0);
+  } else {
+    em = h * 0.8;
+    baseline = y + h * 0.78;
+  }
+  const family = MARK_FONTS[m.font ?? "sans"];
+  ctx.font = `${em}px ${family}`;
+  // Rozmiar jak w oryginale; zmniejszamy tylko, gdy dłuższy tekst wszedłby na następny wyraz lub margines.
+  const room = Math.max(w, roomToRight(ctx, x, w, a.top ?? y, a.bottom ?? y + h, em));
+  while (em > 6 && ctx.measureText(text).width > room) {
+    em *= 0.94;
+    ctx.font = `${em}px ${family}`;
+  }
+  const textW = ctx.measureText(text).width;
+  const patchTop = Math.min(y, a.top ?? y) - 2;
+  const patchBottom = Math.max(y + h, a.bottom ?? y + h) + 2;
+  ctx.fillStyle = a.paper;
+  ctx.fillRect(x - 2, patchTop, Math.max(w, textW) + 4, patchBottom - patchTop);
+  ctx.fillStyle = a.ink;
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(text, a.left !== null ? Math.min(a.left, x + w * 0.2) : x, baseline);
 }
 
 /**
@@ -171,12 +303,7 @@ export async function applyMarks(data: Uint8Array, marks: Mark[], onProgress?: (
           ctx.fillStyle = "#000";
           ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
         } else {
-          ctx.fillStyle = "#fff";
-          ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
-          ctx.fillStyle = "#000";
-          ctx.textBaseline = "alphabetic";
-          const size = fitText(ctx, m.text ?? "", w, h);
-          ctx.fillText(m.text ?? "", x, y + h - (h - size) / 2 - size * 0.15);
+          drawCorrection(ctx, m, x, y, w, h);
         }
       }
       const jpeg = await canvasBytes(canvas, "image/jpeg", 0.9);

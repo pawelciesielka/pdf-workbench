@@ -9,6 +9,7 @@ import {
   extractPages,
   findTextRects,
   insertPdf,
+  MARK_FONTS,
   movePages,
   ocrPages,
   rotatePages,
@@ -50,7 +51,7 @@ interface Props {
   onToast(message: string, kind?: "error" | "info"): void;
 }
 
-type PromptState = { kind: "correct"; marks: Mark[]; value: string; original: string; page: number } | { kind: "findRedact"; value: string } | null;
+type PromptState = { kind: "correct"; marks: Mark[]; value: string; original: string; page: number; font: "serif" | "sans" } | { kind: "findRedact"; value: string } | null;
 
 const sameBytes = (a: Uint8Array | null, b: Uint8Array | null) => !!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -454,15 +455,20 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   };
 
   const correctSelection = () => {
+    if (!floatingSel) return;
+    // Całe słowa: na skanach częściowe zakrycie zostawiałoby resztki liter.
+    const expanded = viewerRef.current?.expandSelectionToWords();
     const m = viewerRef.current?.selectionMarks("correct") ?? [];
-    if (!m.length || !floatingSel) return;
+    if (!m.length) return;
+    const original = expanded?.text || floatingSel.text;
     const pageMarks = m.filter((x) => x.page === m[0].page);
     setPrompt({
       kind: "correct",
       marks: [{ ...pageMarks[0], rect: unionRect(pageMarks.map((x) => x.rect)) }],
-      value: floatingSel.text,
-      original: floatingSel.text,
+      value: original,
+      original,
       page: pageMarks[0].page,
+      font: expanded?.font ?? "sans",
     });
     setFloatingSel(null);
     window.getSelection()?.removeAllRanges();
@@ -484,7 +490,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
           propsRef.current.onToast(errorText(e));
           return;
         }
-        setMarks((cur) => [...cur, ...p.marks.map((m) => ({ ...m, text: p.value }))]);
+        setMarks((cur) => [...cur, ...p.marks.map((m) => ({ ...m, text: p.value, original: p.original, font: p.font }))]);
         propsRef.current.onToast(t("obj.correctAsImage"), "info");
       }
       return;
@@ -749,9 +755,20 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
               <div className="modal small" onMouseDown={(e) => e.stopPropagation()}>
                 <h2>{prompt.kind === "correct" ? t("edit.correctTitle") : t("edit.findRedact")}</h2>
                 <p className="hint">{prompt.kind === "correct" ? t("edit.correctHint") : t("edit.findRedactHint")}</p>
+                {prompt.kind === "correct" && (
+                  <div className="font-choice">
+                    <span>{t("edit.correctFont")}</span>
+                    {(["serif", "sans"] as const).map((f) => (
+                      <button key={f} className={prompt.font === f ? "on" : ""} style={{ fontFamily: MARK_FONTS[f] }} onClick={() => setPrompt({ ...prompt, font: f })}>
+                        {t(f === "serif" ? "edit.fontSerif" : "edit.fontSans")}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <input
                   autoFocus
                   value={prompt.value}
+                  style={prompt.kind === "correct" ? { fontFamily: MARK_FONTS[prompt.font] } : undefined}
                   onChange={(e) => setPrompt({ ...prompt, value: e.target.value })}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && prompt.value.trim()) submitPrompt();
