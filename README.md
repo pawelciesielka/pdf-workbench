@@ -6,6 +6,7 @@ Słownik pojęć: [CONTEXT.md](CONTEXT.md). Decyzje architektoniczne: [docs/adr]
 ## Wymagania
 
 - Node.js 22+, Rust (rustup, toolchain MSVC), Visual Studio Build Tools z modułem C++.
+- `src-tauri/pdfium/pdfium.dll`: PDFium (bblanchon/pdfium-binaries, `chromium/8125`, win-x64) zgodny z `pdfium-render` 0.9.5.
 - Klucz Anthropic API (wpisywany w Ustawieniach aplikacji albo w zmiennej `ANTHROPIC_API_KEY`).
 
 ## Uruchomienie
@@ -28,7 +29,8 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
 - Podgląd: karty, miniatury, wyszukiwanie, powiększanie, tryb ciemny, przeciągnij i upuść, skróty.
 - Czat z Claude z klikalnymi Cytatami, Szybkie akcje, Zapytanie o zaznaczenie, licznik kosztu.
 - Edycja: Adnotacje (podświetlenie, notatka, rysunek, obraz), formularze, operacje na stronach (obrót, usuwanie, przeciąganie, wyodrębnianie, wstawianie PDF), cofnij/ponów, zapis z kopią zapasową.
-- Edycja przez czat: podświetlanie, obrót i nawigacja od razu; usuwanie i przenoszenie stron oraz Redakcja jako Propozycje zmiany do zatwierdzenia.
+- Edycja treści stron (ADR 0004): Obiekty strony (zaznacz, przesuń, zmień rozmiar, usuń), edycja tekstu w miejscu z Czcionką zastępczą, nowy tekst w treści strony.
+- Edycja przez czat: podświetlanie, obrót i nawigacja od razu; usuwanie i przenoszenie stron, Redakcja i zamiana tekstu jako Propozycje zmiany do zatwierdzenia.
 - Przestrzenie robocze: Rozmowy o kilku Dokumentach naraz.
 - OCR skanów (wbudowany w Windows), Redakcja i Korekta (ADR 0003), Porównanie wersji z podsumowaniem w czacie.
 
@@ -40,6 +42,7 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
 - `src-tauri/src/`: backend (Rust)
   - `lib.rs`: komendy: Dokumenty i Wersje, zapis, Rozmowy, Przestrzenie robocze, ustawienia
   - `chat.rs`: Claude API: streaming, Cytaty, narzędzia edycji, tryb „wybrane strony”, koszt
+  - `editor.rs`: PDFium: Obiekty strony, edycja i zamiana tekstu, Czcionka zastępcza
   - `pdfops.rs`: lopdf: obrót stron, zamiana strony w obraz, niewidoczna warstwa tekstu OCR
   - `ocr.rs`: Windows.Media.Ocr
   - `db.rs`: SQLite (migracje), indeks FTS5

@@ -34,7 +34,7 @@ that starts with the exact marker [[spoza-dokumentu]] so the app can label it.\n
 mention if the answer may be on pages that were not provided.\n\
 - You can change the documents with the provided tools, but only when the user asks for a change. Page numbers are 1-based \
 and refer to the current state of the document; after deleting or moving pages, later page numbers shift. \
-Deleting pages, moving pages and redaction are shown to the user as a Proposal they must accept, so tell them what you proposed. \
+Deleting pages, moving pages, redaction and text replacement are shown to the user as a Proposal they must accept, so tell them what you proposed. \
 Nothing is written to disk until the user saves.\n\
 - Answer in the language of the user's question. Be concise and use Markdown (lists, bold, tables) where it helps.";
 
@@ -167,6 +167,17 @@ fn tools() -> Value {
                 "document": doc_prop(), "text": {"type": "string", "minLength": 2}
             }},
             "eager_input_streaming": true
+        },
+        {
+            "name": "replace_text",
+            "description": "Propose replacing a text with a new one directly in the page content (keeps the page as vector text; layout does not reflow, so keep replacements of similar length). Works on one text run at a time, so pass a short exact fragment as it appears in the document, e.g. a number, a date or a name. Omit `pages` to replace on all pages. The user must accept the Proposal and save.",
+            "input_schema": {"type": "object", "additionalProperties": false, "required": ["document", "text", "replacement"], "properties": {
+                "document": doc_prop(),
+                "text": {"type": "string", "minLength": 1},
+                "replacement": {"type": "string"},
+                "pages": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+            }},
+            "eager_input_streaming": true
         }
     ])
 }
@@ -204,6 +215,15 @@ fn validate_tool_input(name: &str, input: &Value) -> Result<(), String> {
             need_int("after_page", 0)
         }
         "redact_text" => need_str("text"),
+        "replace_text" => {
+            need_str("text")?;
+            obj.get("replacement").and_then(|v| v.as_str()).ok_or("missing string `replacement`")?;
+            match obj.get("pages") {
+                None => Ok(()),
+                Some(v) if v.as_array().is_some_and(|a| a.iter().all(|p| p.as_i64().is_some_and(|n| n >= 1))) => Ok(()),
+                _ => Err("`pages` must be an array of page numbers".into()),
+            }
+        }
         _ => Err(format!("unknown tool `{name}`")),
     }
 }

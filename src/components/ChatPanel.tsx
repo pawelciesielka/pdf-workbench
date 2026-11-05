@@ -51,7 +51,7 @@ interface Streaming {
 }
 
 /** Zmiany wymagające „Zastosuj” użytkownika (Propozycje zmiany). */
-const CONFIRM_TOOLS = new Set(["delete_pages", "move_pages", "redact_text"]);
+const CONFIRM_TOOLS = new Set(["delete_pages", "move_pages", "redact_text", "replace_text"]);
 
 const QUICK_ACTIONS = [
   ["actions.summary", "actions.summary.prompt"],
@@ -81,6 +81,8 @@ export function describeTool(name: string, input: Record<string, unknown>): stri
       return t("tool.move", { pages: list(i.pages), after: String(i.after_page) });
     case "redact_text":
       return t("tool.redact", { text: String(i.text).slice(0, 80) });
+    case "replace_text":
+      return t("tool.replace", { text: String(i.text).slice(0, 80), replacement: String(i.replacement).slice(0, 80) });
     default:
       return name;
   }

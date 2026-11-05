@@ -1,7 +1,7 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { t } from "../i18n";
-import { api, errorText, type CitationView, type DocumentInfo, type Selection, type ToolCall, type ToolOutcome } from "../lib/api";
+import { api, errorText, type CitationView, type DocumentInfo, type EditOp, type EditReport, type Selection, type ToolCall, type ToolOutcome } from "../lib/api";
 import {
   applyMarks,
   compareTexts,
@@ -21,6 +21,7 @@ import { extractPageTexts, loadPdf, type PDFDocumentProxy } from "../lib/pdf";
 import { ChatPanel, type ChatPanelHandle } from "./ChatPanel";
 import { changesForChat, CompareView } from "./CompareView";
 import { HIGHLIGHT_COLORS, PdfViewer, type EditorMode, type PdfViewerHandle, type SelectionInfo } from "./PdfViewer";
+import type { TextStyle } from "./ObjectLayer";
 import { Thumbnails } from "./Thumbnails";
 
 export interface DocumentViewHandle {
@@ -49,12 +50,14 @@ interface Props {
   onToast(message: string, kind?: "error" | "info"): void;
 }
 
-type PromptState = { kind: "correct"; marks: Mark[]; value: string } | { kind: "findRedact"; value: string } | null;
+type PromptState = { kind: "correct"; marks: Mark[]; value: string; original: string; page: number } | { kind: "findRedact"; value: string } | null;
 
 const sameBytes = (a: Uint8Array | null, b: Uint8Array | null) => !!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]);
 
 const MODES: { mode: EditorMode; icon: string; label: string }[] = [
   { mode: "none", icon: "🖱", label: "edit.select" },
+  { mode: "objects", icon: "⬚", label: "edit.objects" },
+  { mode: "addtext", icon: "A+", label: "edit.addText" },
   { mode: "highlight", icon: "🖍", label: "edit.highlight" },
   { mode: "freetext", icon: "T", label: "edit.text" },
   { mode: "ink", icon: "✎", label: "edit.ink" },
@@ -65,6 +68,12 @@ const MODES: { mode: EditorMode; icon: string; label: string }[] = [
 function unionRect(rects: Rect[]): Rect {
   return [Math.min(...rects.map((r) => r[0])), Math.min(...rects.map((r) => r[1])), Math.max(...rects.map((r) => r[2])), Math.max(...rects.map((r) => r[3]))];
 }
+
+/** Błąd „nic nie zmieniono” — applyEdit nie zapisuje wtedy kroku cofania. */
+class NothingChanged extends Error {}
+
+const FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48];
+const cleanFont = (f: string) => f.replace(/^[A-Z]{6}\+/, "");
 
 export const DocumentView = forwardRef<DocumentViewHandle, Props>(function DocumentView(props, ref) {
   const { info, active, hasKey, onOpenSettings } = props;
@@ -96,6 +105,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const [menuOpen, setMenuOpen] = useState(false);
   const [, setStackVersion] = useState(0);
   const [docVersion, setDocVersion] = useState(0);
+  const [textStyle, setTextStyle] = useState<TextStyle>({ fontSize: 12, color: "#000000", bold: false });
+  /** Bajty aktualnie wyświetlanego stanu (bez niezapisanych Adnotacji) — do listy obiektów. */
+  const currentBytes = useRef<Uint8Array | null>(null);
   const viewerRef = useRef<PdfViewerHandle>(null);
   const chatRef = useRef<ChatPanelHandle>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -113,6 +125,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   /** Ładuje bajty jako bieżący stan Dokumentu (kopia bajtów — pdf.js przenosi bufor do workera). */
   const loadBytes = useCallback(async (bytes: Uint8Array, keepPage?: number) => {
     const pdf = await loadPdf(bytes.slice().buffer as ArrayBuffer);
+    currentBytes.current = bytes;
     const old = docRef.current;
     docRef.current = pdf;
     firstPage.current = keepPage ?? 1;
@@ -174,7 +187,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     async (label: string, fn: (doc: PDFDocumentProxy, bytes: Uint8Array) => Promise<Uint8Array>): Promise<void> => {
       const d = docRef.current;
       if (!d) throw new Error(t("loading"));
-      setBusy(label);
+      // Krótkie operacje bez migania nakładki „Proszę czekać”.
+      setBusy("");
+      const timer = window.setTimeout(() => setBusy(label), 250);
       try {
         const before = await d.saveDocument();
         const after = await fn(d, before);
@@ -185,11 +200,36 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         setAnnotDirty(false);
         setStackVersion((n) => n + 1);
       } finally {
+        window.clearTimeout(timer);
         setBusy(null);
       }
     },
     [loadBytes],
   );
+
+  const fallbackNote = (r: EditReport) => (r.fontFallbacks.length ? t("obj.fontFallback", { fonts: r.fontFallbacks.map(cleanFont).join(", ") }) : "");
+
+  const objectOps = (ops: EditOp[]) =>
+    applyEdit(t("obj.applying"), async (_d, b) => {
+      const r = await api.editObjects(b, ops);
+      const note = fallbackNote(r.report);
+      if (note) propsRef.current.onToast(note, "info");
+      return r.data;
+    }).catch((e) => propsRef.current.onToast(errorText(e)));
+
+  const objectsFor = (p: number) => (currentBytes.current ? api.pageObjects(currentBytes.current, p) : Promise.resolve([]));
+
+  /** Podmiana tekstu w treści strony; rzuca NothingChanged, gdy nie znaleziono w pojedynczym obiekcie. */
+  const replaceInContent = async (m: { pages?: number[]; find: string; replace: string; within?: Rect }) => {
+    let report: EditReport = { count: 0, fontFallbacks: [] };
+    await applyEdit(t("obj.applying"), async (_d, b) => {
+      const r = await api.replaceText(b, m);
+      if (!r.report.count) throw new NothingChanged();
+      report = r.report;
+      return r.data;
+    });
+    return report;
+  };
 
   const run = (label: string, fn: (doc: PDFDocumentProxy, bytes: Uint8Array) => Promise<Uint8Array>, after?: () => void) =>
     applyEdit(label, fn)
@@ -341,6 +381,22 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         const onPages = [...new Set(found.map((m) => m.page))].join(", ");
         return { ok: true, text: `Zaczerniono ${found.length} wystąpień na stronach ${onPages}. ${unsaved}` };
       }
+      case "replace_text": {
+        try {
+          const r = await replaceInContent({ pages: pages.length ? pages : undefined, find: String(i.text), replace: String(i.replacement) });
+          const fb = r.fontFallbacks.length
+            ? ` Czcionka ${r.fontFallbacks.map(cleanFont).join(", ")} nie miała potrzebnych znaków — w zmienionych miejscach użyto podobnej czcionki systemowej.`
+            : "";
+          return { ok: true, text: `Zamieniono tekst (liczba miejsc: ${r.count}).${fb} ${unsaved}` };
+        } catch (e) {
+          if (e instanceof NothingChanged)
+            return {
+              ok: false,
+              text: `Nie znaleziono „${i.text}” w pojedynczym fragmencie tekstu strony (tekst może być podzielony na kilka fragmentów albo strona jest skanem). Spróbuj krótszego, dokładnego fragmentu.`,
+            };
+          throw e;
+        }
+      }
       default:
         return { ok: false, text: `Nieznane narzędzie ${call.name}.` };
     }
@@ -401,7 +457,13 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     const m = viewerRef.current?.selectionMarks("correct") ?? [];
     if (!m.length || !floatingSel) return;
     const pageMarks = m.filter((x) => x.page === m[0].page);
-    setPrompt({ kind: "correct", marks: [{ ...pageMarks[0], rect: unionRect(pageMarks.map((x) => x.rect)) }], value: floatingSel.text });
+    setPrompt({
+      kind: "correct",
+      marks: [{ ...pageMarks[0], rect: unionRect(pageMarks.map((x) => x.rect)) }],
+      value: floatingSel.text,
+      original: floatingSel.text,
+      page: pageMarks[0].page,
+    });
     setFloatingSel(null);
     window.getSelection()?.removeAllRanges();
   };
@@ -409,7 +471,23 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const submitPrompt = async () => {
     if (!prompt) return;
     if (prompt.kind === "correct") {
-      setMarks((cur) => [...cur, ...prompt.marks.map((m) => ({ ...m, text: prompt.value }))]);
+      const p = prompt;
+      setPrompt(null);
+      if (p.value === p.original) return;
+      // Najpierw prawdziwa edycja tekstu (strona zostaje wektorowa); gdy fragment obejmuje kilka
+      // obiektów tekstowych albo strona to skan — Korekta przez obraz.
+      try {
+        const r = await replaceInContent({ pages: [p.page], find: p.original, replace: p.value, within: p.marks[0].rect });
+        propsRef.current.onToast([t("obj.corrected"), fallbackNote(r)].filter(Boolean).join(" "), "info");
+      } catch (e) {
+        if (!(e instanceof NothingChanged)) {
+          propsRef.current.onToast(errorText(e));
+          return;
+        }
+        setMarks((cur) => [...cur, ...p.marks.map((m) => ({ ...m, text: p.value }))]);
+        propsRef.current.onToast(t("obj.correctAsImage"), "info");
+      }
+      return;
     } else {
       const d = docRef.current;
       if (!d) return;
@@ -502,6 +580,26 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
                 }}
               />
             ))}
+          </div>
+        )}
+        {(editorMode === "addtext" || editorMode === "objects") && (
+          <div className="text-style">
+            {editorMode === "addtext" && (
+              <>
+                <select value={textStyle.fontSize} title={t("obj.fontSize")} onChange={(e) => setTextStyle({ ...textStyle, fontSize: Number(e.target.value) })}>
+                  {FONT_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n} pt
+                    </option>
+                  ))}
+                </select>
+                <input type="color" value={textStyle.color} title={t("obj.color")} onChange={(e) => setTextStyle({ ...textStyle, color: e.target.value })} />
+                <button className={`icon-btn ${textStyle.bold ? "on" : ""}`} title={t("obj.bold")} onClick={() => setTextStyle({ ...textStyle, bold: !textStyle.bold })}>
+                  <b>B</b>
+                </button>
+              </>
+            )}
+            <span className="mode-hint">{t(editorMode === "addtext" ? "obj.addHint" : "obj.hint")}</span>
           </div>
         )}
         <button className="icon-btn" title={t("edit.undo")} disabled={!canUndo || !!busy} onClick={undo}>
@@ -625,6 +723,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
               onFindCount={(current, total) => setFindCount({ current, total })}
               onSelection={setFloatingSel}
               onEditorState={setEditorState}
+              textStyle={textStyle}
+              objectsFor={objectsFor}
+              onObjectOps={objectOps}
             />
           )}
           {floatingSel && (

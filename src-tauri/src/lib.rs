@@ -1,5 +1,6 @@
 mod chat;
 mod db;
+mod editor;
 mod keys;
 mod ocr;
 mod pdfops;
@@ -236,6 +237,44 @@ async fn add_text_layer(request: Request<'_>) -> Res<Response> {
     let pages: Vec<pdfops::PageText> = meta(&request)?;
     let out = tokio::task::spawn_blocking(move || pdfops::add_text_layer(&bytes, &pages)).await.map_err(err)??;
     Ok(Response::new(out))
+}
+
+#[derive(Deserialize)]
+struct ObjectsMeta {
+    page: u16,
+}
+
+#[tauri::command]
+async fn page_objects(request: Request<'_>) -> Res<Vec<editor::PageObject>> {
+    let bytes = raw_body(&request)?;
+    let m: ObjectsMeta = meta(&request)?;
+    tokio::task::spawn_blocking(move || editor::page_objects(&bytes, m.page)).await.map_err(err)?
+}
+
+#[tauri::command]
+async fn edit_objects(request: Request<'_>) -> Res<Response> {
+    let bytes = raw_body(&request)?;
+    let ops: Vec<editor::EditOp> = meta(&request)?;
+    let (out, report) = tokio::task::spawn_blocking(move || editor::edit_objects(&bytes, ops)).await.map_err(err)??;
+    Ok(Response::new(editor::pack(out, &report)))
+}
+
+#[derive(Deserialize)]
+struct ReplaceMeta {
+    #[serde(default)]
+    pages: Vec<u16>,
+    find: String,
+    replace: String,
+    within: Option<[f32; 4]>,
+}
+
+#[tauri::command]
+async fn replace_text(request: Request<'_>) -> Res<Response> {
+    let bytes = raw_body(&request)?;
+    let m: ReplaceMeta = meta(&request)?;
+    let (out, report) =
+        tokio::task::spawn_blocking(move || editor::replace_text(&bytes, &m.pages, &m.find, &m.replace, m.within)).await.map_err(err)??;
+    Ok(Response::new(editor::pack(out, &report)))
 }
 
 #[tauri::command]
@@ -545,6 +584,19 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let conn = db::open(&dir.join("workbench.db"))?;
+            // pdfium.dll: obok exe (instalator), w zasobach albo w katalogu źródeł (dev).
+            let mut dirs = vec![];
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(d) = exe.parent() {
+                    dirs.push(d.to_path_buf());
+                }
+            }
+            if let Ok(r) = app.path().resource_dir() {
+                dirs.push(r.join("pdfium"));
+                dirs.push(r);
+            }
+            dirs.push(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pdfium"));
+            std::thread::spawn(move || editor::init(&dirs));
             app.manage(AppState {
                 db: Mutex::new(conn),
                 http: reqwest::Client::builder().build()?,
@@ -561,6 +613,9 @@ pub fn run() {
             rotate_pages,
             rasterize_pages,
             add_text_layer,
+            page_objects,
+            edit_objects,
+            replace_text,
             ocr_image,
             save_page_texts,
             list_recent,

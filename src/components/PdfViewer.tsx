@@ -1,7 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Mark, Rect } from "../lib/editing";
 import { newMarkId } from "../lib/editing";
+import type { EditOp, PageObject } from "../lib/api";
 import { loadViewerModule, pdfjsLib, type PDFDocumentProxy } from "../lib/pdf";
+import { ObjectLayer, type LayerGeom, type TextStyle } from "./ObjectLayer";
 
 type Mod = Awaited<ReturnType<typeof loadViewerModule>>;
 type Viewer = InstanceType<Mod["PDFViewer"]>;
@@ -9,9 +11,12 @@ type Bus = InstanceType<Mod["EventBus"]>;
 // Menedżer edytorów adnotacji pdf.js (typ wewnętrzny biblioteki).
 type UiManager = { undo(): void; redo(): void; highlightSelection(method?: string): void };
 
-export type EditorMode = "none" | "highlight" | "freetext" | "ink" | "stamp" | "redact";
+export type EditorMode = "none" | "highlight" | "freetext" | "ink" | "stamp" | "redact" | "objects" | "addtext";
 
-const EDITOR_TYPES: Record<Exclude<EditorMode, "redact">, number> = {
+/** Tryby obsługiwane przez naszą nakładkę (pdf.js w trybie bez edytora). */
+const OVERLAY_MODES = new Set<EditorMode>(["redact", "objects", "addtext"]);
+
+const EDITOR_TYPES: Record<Exclude<EditorMode, "redact" | "objects" | "addtext">, number> = {
   none: pdfjsLib.AnnotationEditorType.NONE,
   highlight: pdfjsLib.AnnotationEditorType.HIGHLIGHT,
   freetext: pdfjsLib.AnnotationEditorType.FREETEXT,
@@ -62,6 +67,9 @@ interface Props {
   onFindCount(current: number, total: number): void;
   onSelection(sel: SelectionInfo | null): void;
   onEditorState(s: { canUndo: boolean; canRedo: boolean }): void;
+  textStyle: TextStyle;
+  objectsFor(page: number): Promise<PageObject[]>;
+  onObjectOps(ops: EditOp[]): Promise<void>;
 }
 
 const MIN_SCALE = 0.25;
@@ -126,6 +134,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
   const [draft, setDraft] = useState<{ page: number; x0: number; y0: number; x1: number; y1: number } | null>(null);
   const cb = useRef(props);
   cb.current = props;
+  /** Pozycja widoku sprzed przeładowania Dokumentu (po edycji wracamy w to samo miejsce). */
+  const savedView = useRef<{ scale: number; top: number; left: number; pages: number } | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
     let disposed = false;
@@ -148,8 +159,21 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
       });
       linkService.setViewer(viewer);
       eventBus.on("pagesinit", () => {
-        viewer.currentScaleValue = "page-width";
-        if (cb.current.initialPage && cb.current.initialPage > 1) viewer.currentPageNumber = Math.min(cb.current.initialPage, viewer.pagesCount);
+        const saved = savedView.current;
+        savedView.current = null;
+        if (saved && saved.pages === viewer.pagesCount) {
+          viewer.currentScale = saved.scale;
+          requestAnimationFrame(() => {
+            if (containerRef.current) {
+              containerRef.current.scrollTop = saved.top;
+              containerRef.current.scrollLeft = saved.left;
+            }
+          });
+        } else {
+          viewer.currentScaleValue = "page-width";
+          if (cb.current.initialPage && cb.current.initialPage > 1) viewer.currentPageNumber = Math.min(cb.current.initialPage, viewer.pagesCount);
+        }
+        setCurrentPage(viewer.currentPageNumber);
         applyMode(cb.current.editorMode);
       });
       eventBus.on("annotationeditoruimanager", (e: { uiManager: UiManager }) => {
@@ -164,7 +188,10 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         editorState.current = { canUndo: !!e.details.hasSomethingToUndo, canRedo: !!e.details.hasSomethingToRedo };
         cb.current.onEditorState(editorState.current);
       });
-      eventBus.on("pagechanging", (e: { pageNumber: number }) => cb.current.onPageChange(e.pageNumber));
+      eventBus.on("pagechanging", (e: { pageNumber: number }) => {
+        setCurrentPage(e.pageNumber);
+        cb.current.onPageChange(e.pageNumber);
+      });
       eventBus.on("scalechanging", (e: { scale: number }) => {
         cb.current.onScaleChange(e.scale);
         setTimeout(() => setLayout((n) => n + 1), 0);
@@ -182,6 +209,9 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
     })();
     return () => {
       disposed = true;
+      const v = viewerRef.current;
+      const c = containerRef.current;
+      if (v && c && v.pagesCount) savedView.current = { scale: v.currentScale, top: c.scrollTop, left: c.scrollLeft, pages: v.pagesCount };
       viewerRef.current?.setDocument(null as unknown as PDFDocumentProxy);
       viewerRef.current = null;
       uiRef.current = null;
@@ -191,7 +221,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
   const applyMode = (mode: EditorMode) => {
     const v = viewerRef.current;
     if (!v) return;
-    const type = mode === "redact" ? EDITOR_TYPES.none : EDITOR_TYPES[mode];
+    const type = OVERLAY_MODES.has(mode) ? EDITOR_TYPES.none : EDITOR_TYPES[mode as keyof typeof EDITOR_TYPES];
     try {
       if ((v.annotationEditorMode as unknown as number) !== type) v.annotationEditorMode = { mode: type };
     } catch {
@@ -441,6 +471,43 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
     };
   }, [clientToPdf]);
 
+  // Geometria dla warstwy obiektów (układ nakładki ↔ przestrzeń PDF).
+  const geom: LayerGeom = {
+    pageAt(lx, ly) {
+      const lr = layerRef.current?.getBoundingClientRect();
+      return lr ? (pageAt(lx + lr.left, ly + lr.top)?.page ?? null) : null;
+    },
+    toPdf(page, lx, ly) {
+      const lr = layerRef.current?.getBoundingClientRect();
+      const pageEl = innerRef.current?.querySelector<HTMLElement>(`.page[data-page-number="${page}"]`);
+      const view = viewerRef.current?.getPageView(page - 1);
+      if (!lr || !pageEl || !view) return null;
+      const pr = pageEl.getBoundingClientRect();
+      const [x, y] = view.viewport.convertToPdfPoint(lx + lr.left - pr.left, ly + lr.top - pr.top);
+      return [x, y];
+    },
+    toLayer(page, x, y) {
+      const lr = layerRef.current?.getBoundingClientRect();
+      const pageEl = innerRef.current?.querySelector<HTMLElement>(`.page[data-page-number="${page}"]`);
+      const view = viewerRef.current?.getPageView(page - 1);
+      if (!lr || !pageEl || !view) return null;
+      const pr = pageEl.getBoundingClientRect();
+      const [vx, vy] = view.viewport.convertToViewportPoint(x, y);
+      return [pr.left - lr.left + vx, pr.top - lr.top + vy];
+    },
+    scale: () => viewerRef.current?.currentScale ?? 1,
+    pageCanvas: (page) => innerRef.current?.querySelector<HTMLCanvasElement>(`.page[data-page-number="${page}"] canvas`) ?? null,
+    pageBox(page) {
+      const lr = layerRef.current?.getBoundingClientRect();
+      const pageEl = innerRef.current?.querySelector<HTMLElement>(`.page[data-page-number="${page}"]`);
+      if (!lr || !pageEl) return null;
+      const pr = pageEl.getBoundingClientRect();
+      return { left: pr.left - lr.left, top: pr.top - lr.top, width: pr.width, height: pr.height };
+    },
+    currentPage: () => currentPage,
+  };
+  const objectMode = props.editorMode === "objects" || props.editorMode === "addtext";
+
   const draftBox = (() => {
     if (!draft || !layerRef.current) return null;
     const lr = layerRef.current.getBoundingClientRect();
@@ -453,12 +520,12 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
   })();
 
   return (
-    <div className={`pdf-container ${props.editorMode === "redact" ? "mode-redact" : ""}`} ref={containerRef}>
+    <div className={`pdf-container mode-${props.editorMode}`} ref={containerRef}>
       <div className="pdfViewer" ref={innerRef} />
       <div
         ref={layerRef}
         className="mark-layer"
-        style={{ height: innerRef.current?.scrollHeight ?? 0, pointerEvents: props.editorMode === "redact" ? "auto" : "none" }}
+        style={{ height: innerRef.current?.scrollHeight ?? 0, pointerEvents: OVERLAY_MODES.has(props.editorMode) ? "auto" : "none" }}
         onMouseDown={onLayerDown}
         onMouseMove={onLayerMove}
         onMouseUp={onLayerUp}
@@ -473,6 +540,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
           </div>
         ))}
         {draftBox && <div className="mark mark-draft" style={draftBox} />}
+        {objectMode && (
+          <ObjectLayer
+            mode={props.editorMode as "objects" | "addtext"}
+            geom={geom}
+            docKey={props.doc}
+            layout={layout}
+            textStyle={props.textStyle}
+            objectsFor={props.objectsFor}
+            onOps={props.onObjectOps}
+          />
+        )}
       </div>
     </div>
   );

@@ -25,7 +25,7 @@ _Unikaj_: rewizja, kopia
 ### Edycja
 
 **Edycja**:
-Niezapisana zmiana Dokumentu w aplikacji (Adnotacja, operacja na stronach, wypełnienie formularza, OCR, Redakcja, Korekta); staje się nowym Dokumentem dopiero po zapisie.
+Niezapisana zmiana Dokumentu w aplikacji (Adnotacja, operacja na stronach, zmiana Obiektu strony, wypełnienie formularza, OCR, Redakcja, Korekta); staje się nowym Dokumentem dopiero po zapisie.
 _Unikaj_: modyfikacja, zmiana pliku
 
 **Adnotacja**:
@@ -37,8 +37,16 @@ Trwałe usunięcie wskazanych fragmentów z Dokumentu: strona jest zastępowana 
 _Unikaj_: zaczernienie, anonimizacja, maskowanie
 
 **Korekta**:
-Zastąpienie wskazanego fragmentu tekstu nowym tekstem w tym samym miejscu strony, technicznie jak Redakcja z wpisanym nowym tekstem.
-_Unikaj_: edycja tekstu, poprawka
+Zastąpienie wskazanego fragmentu tekstu nowym tekstem w tym samym miejscu strony. Gdy fragmentu nie da się zmienić w treści strony (skan, tekst rozbity na części), strona staje się obrazem jak przy Redakcji.
+_Unikaj_: poprawka
+
+**Obiekt strony**:
+Element treści strony (fragment tekstu, obraz, kształt), który można zaznaczyć, przesunąć, przeskalować, usunąć, a w przypadku tekstu także przepisać. W odróżnieniu od Adnotacji należy do samej strony.
+_Unikaj_: element, warstwa
+
+**Czcionka zastępcza**:
+Podobna czcionka systemowa użyta w zmienionym tekście, gdy czcionka Dokumentu nie ma potrzebnych znaków (np. polskich liter).
+_Unikaj_: font fallback
 
 **OCR**:
 Rozpoznanie tekstu na stronie bez warstwy tekstu (skan) i dodanie niewidocznego tekstu, dzięki któremu strona jest przeszukiwalna.
@@ -49,7 +57,7 @@ Zestawienie tekstu dwóch Dokumentów słowo po słowie, ze wskazaniem stron, na
 _Unikaj_: diff, różnice
 
 **Propozycja zmiany**:
-Edycja zaproponowana przez AI w Rozmowie, która czeka na „Zastosuj” użytkownika (usunięcie lub przestawienie stron, Redakcja).
+Edycja zaproponowana przez AI w Rozmowie, która czeka na „Zastosuj” użytkownika (usunięcie lub przestawienie stron, Redakcja, zamiana tekstu).
 _Unikaj_: sugestia, akcja AI
 
 ### Rozmowy

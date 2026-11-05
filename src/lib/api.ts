@@ -120,6 +120,37 @@ export interface OcrLine {
   h: number;
 }
 
+/** Obiekt treści strony (PDFium), współrzędne PDF [x0, y0, x1, y1]. */
+export interface PageObject {
+  index: number;
+  kind: "text" | "image" | "path" | "shading" | "form";
+  rect: [number, number, number, number];
+  text?: string;
+  fontSize?: number;
+  fontName?: string;
+  color?: string;
+}
+
+export type EditOp =
+  | { op: "move"; page: number; index: number; dx: number; dy: number }
+  | { op: "resize"; page: number; index: number; rect: [number, number, number, number] }
+  | { op: "delete"; page: number; index: number }
+  | { op: "setText"; page: number; index: number; text: string; fontSize?: number; color?: string }
+  | { op: "addText"; page: number; x: number; y: number; text: string; fontSize: number; color?: string; bold?: boolean };
+
+export interface EditReport {
+  count: number;
+  fontFallbacks: string[];
+}
+
+/** Odpowiedź [u32 LE długość JSON][JSON][PDF]. */
+function unpackEdit(buf: ArrayBuffer): { data: Uint8Array; report: EditReport } {
+  const all = new Uint8Array(buf);
+  const len = new DataView(buf).getUint32(0, true);
+  const report = JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + len))) as EditReport;
+  return { data: all.slice(4 + len), report };
+}
+
 /** Wywołanie z danymi binarnymi w treści i parametrami w nagłówku. */
 function rawInvoke<T>(cmd: string, body: Uint8Array, meta: unknown): Promise<T> {
   return invoke<T>(cmd, body, { headers: { "x-meta": encodeURIComponent(JSON.stringify(meta ?? null)) } });
@@ -136,6 +167,10 @@ export const api = {
   rasterizePages: (body: Uint8Array, meta: { pdfLen: number; items: { page: number; offset: number; len: number; width: number; height: number }[] }) =>
     rawInvoke<ArrayBuffer>("rasterize_pages", body, meta).then(bytes),
   addTextLayer: (data: Uint8Array, pages: { page: number; lines: OcrLine[] }[]) => rawInvoke<ArrayBuffer>("add_text_layer", data, pages).then(bytes),
+  pageObjects: (data: Uint8Array, page: number) => rawInvoke<PageObject[]>("page_objects", data, { page }),
+  editObjects: (data: Uint8Array, ops: EditOp[]) => rawInvoke<ArrayBuffer>("edit_objects", data, ops).then(unpackEdit),
+  replaceText: (data: Uint8Array, m: { pages?: number[]; find: string; replace: string; within?: [number, number, number, number] }) =>
+    rawInvoke<ArrayBuffer>("replace_text", data, m).then(unpackEdit),
   ocrImage: (png: Uint8Array) => rawInvoke<{ language: string; lines: OcrLine[] }>("ocr_image", png, null),
   savePageTexts: (hash: string, pages: string[], force = false) => invoke<void>("save_page_texts", { hash, pages, force }),
   listRecent: () => invoke<RecentItem[]>("list_recent"),
