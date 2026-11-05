@@ -34,7 +34,7 @@
       { "ext": ["pdf"], "name": "PDF", "description": "Dokument PDF", "role": "Viewer", "mimeType": "application/pdf" }
     ],
     "windows": {
-      "nsis": { "installMode": "currentUser", "languages": ["Polish", "English"] }
+      "nsis": { "installMode": "currentUser", "languages": ["Polish", "English"], "customLanguageFiles": { "Polish": "nsis/Polish.nsh" } }
     }
   }
 }

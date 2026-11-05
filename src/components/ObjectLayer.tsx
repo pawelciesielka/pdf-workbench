@@ -49,6 +49,28 @@ type Drag = {
 };
 type Editing = { page: number; index: number | null; box: Box; value: string; fontPx: number; at?: Pt };
 
+/**
+ * Wybór koloru zatwierdzany raz — po zamknięciu okna wyboru (natywne zdarzenie „change”),
+ * a nie przy każdym ruchu suwaka (React onChange = „input”).
+ */
+export function ColorInput({ value, title, onCommit }: { value: string; title: string; onCommit(color: string): void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [local, setLocal] = useState(value);
+  const commit = useRef(onCommit);
+  commit.current = onCommit;
+  useEffect(() => setLocal(value), [value]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onChange = () => {
+      if (el.value.toLowerCase() !== value.toLowerCase()) commit.current(el.value);
+    };
+    el.addEventListener("change", onChange);
+    return () => el.removeEventListener("change", onChange);
+  }, [value]);
+  return <input ref={ref} type="color" value={local} title={title} onChange={(e) => setLocal(e.target.value)} />;
+}
+
 const area = (o: PageObject) => Math.max(0.01, (o.rect[2] - o.rect[0]) * (o.rect[3] - o.rect[1]));
 const cleanFont = (name?: string) => (name ?? "").replace(/^[A-Z]{6}\+/, "");
 
@@ -340,7 +362,7 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
                     }
                   }}
                 />
-                <input type="color" value={selected.color ?? "#000000"} title={t("obj.color")} onChange={(e) => applyStyle({ color: e.target.value })} />
+                <ColorInput value={selected.color ?? "#000000"} title={t("obj.color")} onCommit={(color) => applyStyle({ color })} />
               </>
             )}
             <button

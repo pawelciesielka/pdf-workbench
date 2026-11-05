@@ -84,7 +84,13 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const [pageInput, setPageInput] = useState("1");
   const [scale, setScale] = useState(1);
   const [showThumbs, setShowThumbs] = useState(true);
-  const [showChat, setShowChat] = useState(true);
+  const [showChat, setShowChat] = useState(() => {
+    try {
+      return localStorage.getItem("showChat") !== "0";
+    } catch {
+      return true;
+    }
+  });
   const [chatWidth, setChatWidth] = useState(() => Number(localStorage.getItem("chatWidth")) || 420);
   const [query, setQuery] = useState("");
   const [findCount, setFindCount] = useState<{ current: number; total: number } | null>(null);
@@ -183,6 +189,15 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
 
   useEffect(() => setPageInput(String(page)), [page]);
 
+  // Widoczność czatu zapamiętywana między kartami i uruchomieniami.
+  useEffect(() => {
+    try {
+      localStorage.setItem("showChat", showChat ? "1" : "0");
+    } catch {
+      /* brak dostępu do localStorage */
+    }
+  }, [showChat]);
+
   /** Edycja strukturalna: zapamiętuje stan do cofnięcia, wykonuje operację i ładuje wynik. */
   const applyEdit = useCallback(
     async (label: string, fn: (doc: PDFDocumentProxy, bytes: Uint8Array) => Promise<Uint8Array>): Promise<void> => {
@@ -190,7 +205,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
       if (!d) throw new Error(t("loading"));
       // Krótkie operacje bez migania nakładki „Proszę czekać”.
       setBusy("");
-      const timer = window.setTimeout(() => setBusy(label), 250);
+      const timer = window.setTimeout(() => setBusy(label), 600);
       try {
         const before = await d.saveDocument();
         const after = await fn(d, before);

@@ -52,6 +52,10 @@ export default function App() {
   useEffect(() => {
     if (theme === "system") document.documentElement.removeAttribute("data-theme");
     else document.documentElement.setAttribute("data-theme", theme);
+    // Pasek tytułu okna (systemowy) w tym samym motywie; null = zgodnie z systemem.
+    getCurrentWindow()
+      .setTheme(theme === "system" ? null : theme)
+      .catch(() => {});
     try {
       localStorage.setItem("theme", theme);
     } catch {
