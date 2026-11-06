@@ -1227,6 +1227,63 @@ textarea:focus {
 .object-layer.mode-addtext {
   cursor: text;
 }
+.object-layer.over-obj {
+  cursor: move;
+}
+.color-menu {
+  position: relative;
+  display: inline-flex;
+}
+.color-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+}
+.color-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+.color-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: -4px;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 5px;
+  padding: 7px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+.obj-toolbar.pop-up .color-pop {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.color-pop .swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+.color-pop .swatch.on {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.color-other {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
 .obj-box {
   position: absolute;
   pointer-events: none;
@@ -1499,4 +1556,36 @@ button.danger:hover:not(:disabled) {
 .sig-item.bad .sig-icon,
 .sig-item.bad .sig-status {
   color: var(--danger);
+}
+
+.sig-item .trust {
+  color: var(--muted);
+}
+.sig-item .trust.ok {
+  color: #2f9e44;
+}
+.sig-item .trust.bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+.batch-files {
+  max-height: 110px;
+  overflow: auto;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.batch-files div {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-place-bar > span {
+  flex: 1;
+  min-width: 0;
 }

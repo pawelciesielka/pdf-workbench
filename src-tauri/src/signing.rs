@@ -17,6 +17,10 @@ use windows::Win32::Security::Cryptography::*;
 
 type Res<T> = Result<T, String>;
 
+mod ltv;
+pub mod trust;
+pub use trust::{issuer_countries, check_trust, TrustInfo};
+
 const ENC: CERT_QUERY_ENCODING_TYPE = CERT_QUERY_ENCODING_TYPE(X509_ASN_ENCODING.0 | PKCS_7_ASN_ENCODING.0);
 const OID_SHA256: &[u8] = b"2.16.840.1.101.3.4.2.1\0";
 const OID_SIGNING_CERT_V2: &[u8] = b"1.2.840.113549.1.9.16.2.47\0";
@@ -82,6 +86,7 @@ impl Cert {
         unsafe {
             let mut n = 0u32;
             CertGetCertificateContextProperty(self.0, CERT_KEY_PROV_INFO_PROP_ID, None, &mut n).is_ok()
+                || CertGetCertificateContextProperty(self.0, CERT_NCRYPT_KEY_HANDLE_PROP_ID, None, &mut n).is_ok()
         }
     }
 }
@@ -594,8 +599,18 @@ fn dict_string(dict: &[u8], key: &[u8]) -> Option<String> {
     None
 }
 
-/// Wszystkie podpisy w pliku z oceną integralności. Szybkie dla plików bez podpisów.
-pub fn inspect(bytes: &[u8]) -> Vec<SignatureInfo> {
+/// Podpis znaleziony w pliku: wartość /Contents, podpisane bajty i fragment słownika.
+pub(crate) struct RawSig {
+    pub cms: Vec<u8>,
+    pub data: Vec<u8>,
+    pub dict: Vec<u8>,
+    pub covers_whole: bool,
+    /// Znacznik czasu dokumentu (/SubFilter /ETSI.RFC3161): /Contents to token RFC 3161.
+    pub doc_timestamp: bool,
+}
+
+/// Wszystkie /ByteRange w pliku (szybkie dla plików bez podpisów).
+pub(crate) fn raw_signatures(bytes: &[u8]) -> Vec<RawSig> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let mut from = 0;
@@ -608,33 +623,75 @@ pub fn inspect(bytes: &[u8]) -> Vec<SignatureInfo> {
             continue;
         }
         let raw = decode_hex(&bytes[b + 1..c - 1]);
-        let cms = &raw[..der_len(&raw).unwrap_or(raw.len()).min(raw.len())];
+        let cms = raw[..der_len(&raw).unwrap_or(raw.len()).min(raw.len())].to_vec();
         let data = [&bytes[..b], &bytes[c..c + d]].concat();
         // Fragment słownika podpisu wokół /Contents (bez samej wartości podpisu).
         let start = rfind(&bytes[b.saturating_sub(4096)..b], b"obj").map(|q| b.saturating_sub(4096) + q).unwrap_or(b.saturating_sub(4096));
         let tail = &bytes[c..bytes.len().min(c + 4096)];
         let tail = &tail[..find(tail, b"endobj").unwrap_or(tail.len())];
         let dict = [&bytes[start..b], tail].concat();
-        let v = verify(cms, &data);
-        out.push(SignatureInfo {
-            kind: if find(&dict, b"ETSI.RFC3161").is_some() { "timestamp" } else { "signature" },
-            signer: v.signer.or_else(|| dict_string(&dict, b"/Name")),
-            issuer: v.issuer,
-            time: dict_string(&dict, b"/M"),
-            reason: dict_string(&dict, b"/Reason"),
-            intact: v.ok,
+        out.push(RawSig {
+            doc_timestamp: find(&dict, b"ETSI.RFC3161").is_some(),
             covers_whole: bytes[c + d..].iter().all(|x| x.is_ascii_whitespace() || *x == 0),
-            timestamped: cms.windows(DER_OID_TST.len()).any(|w| w == DER_OID_TST),
-            qualified: v.qualified,
-            problem: v.problem,
+            cms,
+            data,
+            dict,
         });
     }
     out
 }
 
+/// Znacznik czasu dokumentu: token musi dotyczyć dokładnie podpisanych bajtów.
+fn verify_doc_timestamp(token: &[u8], data: &[u8]) -> Verified {
+    let mut v = Verified { ok: false, signer: None, issuer: None, qualified: false, problem: None };
+    unsafe {
+        let mut ctx: *mut CRYPT_TIMESTAMP_CONTEXT = null_mut();
+        let mut signer: *mut CERT_CONTEXT = null_mut();
+        let mut store = HCERTSTORE(null_mut());
+        match CryptVerifyTimeStampSignature(token, Some(data), None, &mut ctx, &mut signer, Some(&mut store)) {
+            Ok(()) => v.ok = true,
+            Err(e) => v.problem = Some(format!("Znacznik czasu nie zgadza się z treścią — dokument zmieniono po jego dodaniu ({e}).")),
+        }
+        if !signer.is_null() {
+            let c = Cert(signer);
+            v.signer = Some(c.name(false));
+            v.issuer = Some(c.name(true));
+        }
+        if !ctx.is_null() {
+            CryptMemFree(Some(ctx as *const c_void));
+        }
+        if !store.0.is_null() {
+            let _ = CertCloseStore(Some(store), 0);
+        }
+    }
+    v
+}
+
+/// Wszystkie podpisy w pliku z oceną integralności. Szybkie dla plików bez podpisów.
+pub fn inspect(bytes: &[u8]) -> Vec<SignatureInfo> {
+    raw_signatures(bytes)
+        .into_iter()
+        .map(|r| {
+            let v = if r.doc_timestamp { verify_doc_timestamp(&r.cms, &r.data) } else { verify(&r.cms, &r.data) };
+            SignatureInfo {
+                kind: if r.doc_timestamp { "timestamp" } else { "signature" },
+                signer: v.signer.or_else(|| dict_string(&r.dict, b"/Name")),
+                issuer: v.issuer,
+                time: dict_string(&r.dict, b"/M"),
+                reason: dict_string(&r.dict, b"/Reason"),
+                intact: v.ok,
+                covers_whole: r.covers_whole,
+                timestamped: r.doc_timestamp || r.cms.windows(DER_OID_TST.len()).any(|w| w == DER_OID_TST),
+                qualified: v.qualified,
+                problem: v.problem,
+            }
+        })
+        .collect()
+}
+
 // --- Zapis podpisu do PDF -------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Visible {
     /// Numer strony od 1.
@@ -645,7 +702,7 @@ pub struct Visible {
     pub lines: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SignOptions {
     pub cert_id: String,
@@ -654,6 +711,9 @@ pub struct SignOptions {
     pub reason: Option<String>,
     pub location: Option<String>,
     pub timestamp: bool,
+    /// Dane do długoterminowej weryfikacji (DSS) i znacznik czasu dokumentu — PAdES-LTA.
+    #[serde(default)]
+    pub ltv: bool,
     pub visible: Option<Visible>,
 }
 
@@ -880,199 +940,235 @@ fn resolve_array(doc: &Document, o: Option<&Object>) -> Vec<Object> {
     }
 }
 
-fn add_field(doc: &Document, form: &mut Dictionary, field: ObjectId) {
-    let mut fields = resolve_array(doc, form.get(b"Fields").ok());
-    fields.push(Object::Reference(field));
-    form.set("Fields", Object::Array(fields));
-    form.set("SigFlags", Object::Integer(3));
+fn resolve_dict(doc: &Document, o: Option<&Object>) -> Dictionary {
+    match o {
+        Some(Object::Dictionary(d)) => d.clone(),
+        Some(Object::Reference(r)) => doc.get_object(*r).and_then(Object::as_dict).cloned().unwrap_or_default(),
+        _ => Dictionary::new(),
+    }
 }
 
-/// Dopisuje (przyrostowo) pole podpisu z pustym miejscem na podpis.
-/// Zwraca nowe bajty i położenie wartości /Contents: indeks „<” i indeks za „>”.
-fn prepare(bytes: &[u8], o: &SignOptions, signer_name: &str) -> Res<(Vec<u8>, usize, usize)> {
-    let doc = Document::load_mem(bytes).map_err(|e| format!("Nie można odczytać PDF: {e}"))?;
-    if doc.is_encrypted() || doc.trailer.has(b"Encrypt") {
-        return Err("Nie można podpisać zaszyfrowanego (chronionego hasłem) pliku PDF.".into());
+/// Aktualizacja przyrostowa PDF: nowe i zmienione obiekty dopisywane na końcu pliku,
+/// oryginalne bajty zostają nietknięte (wcześniejsze podpisy pozostają ważne).
+pub(crate) struct Update<'a> {
+    bytes: &'a [u8],
+    pub doc: Document,
+    next: u32,
+    objs: Vec<(ObjectId, Vec<u8>)>,
+    pub root_id: ObjectId,
+    /// Katalog dokumentu; zapisywany na końcu, gdy `catalog_dirty`.
+    pub catalog: Dictionary,
+    pub catalog_dirty: bool,
+}
+
+impl<'a> Update<'a> {
+    pub fn open(bytes: &'a [u8]) -> Res<Self> {
+        let doc = Document::load_mem(bytes).map_err(|e| format!("Nie można odczytać PDF: {e}"))?;
+        if doc.is_encrypted() || doc.trailer.has(b"Encrypt") {
+            return Err("Nie można podpisać zaszyfrowanego (chronionego hasłem) pliku PDF.".into());
+        }
+        let size_old = doc.trailer.get(b"Size").and_then(Object::as_i64).unwrap_or(0).max(0) as u32;
+        let next = size_old.max(doc.max_id + 1);
+        let root_id = doc.trailer.get(b"Root").and_then(Object::as_reference).map_err(|_| "Brak katalogu dokumentu (/Root).")?;
+        let catalog = doc.get_object(root_id).and_then(Object::as_dict).map_err(|e| e.to_string())?.clone();
+        Ok(Self { bytes, doc, next, objs: Vec::new(), root_id, catalog, catalog_dirty: false })
     }
-    let prev = last_startxref(bytes).ok_or("Nie znaleziono tablicy odsyłaczy (xref) w pliku PDF.")?;
-    let xref_stream = !bytes.get(prev..).is_some_and(|b| b.starts_with(b"xref"));
-    let size_old = doc.trailer.get(b"Size").and_then(Object::as_i64).unwrap_or(0).max(0) as u32;
-    let mut next = size_old.max(doc.max_id + 1);
-    fn take(next: &mut u32) -> ObjectId {
-        *next += 1;
-        (*next - 1, 0)
+
+    pub fn alloc(&mut self) -> ObjectId {
+        self.next += 1;
+        (self.next - 1, 0)
     }
 
-    let root_id = doc.trailer.get(b"Root").and_then(Object::as_reference).map_err(|_| "Brak katalogu dokumentu (/Root).")?;
-    let mut catalog = doc.get_object(root_id).and_then(Object::as_dict).map_err(|e| e.to_string())?.clone();
-    let pages = doc.get_pages();
-    let page_no = o.visible.as_ref().map(|v| v.page).unwrap_or(1);
-    let page_id = *pages.get(&page_no).ok_or("Nie ma takiej strony.")?;
-    let mut page = doc.get_object(page_id).and_then(Object::as_dict).map_err(|e| e.to_string())?.clone();
+    pub fn put(&mut self, id: ObjectId, body: Vec<u8>) {
+        self.objs.push((id, body));
+    }
 
-    let sig_id = take(&mut next);
-    let widget_id = take(&mut next);
-    let mut objs: Vec<(ObjectId, Vec<u8>)> = Vec::new();
+    /// Nowy strumień z surowymi danymi (np. certyfikat albo CRL w DSS).
+    pub fn put_stream(&mut self, data: &[u8]) -> ObjectId {
+        let id = self.alloc();
+        let mut body = format!("<< /Length {} >>\nstream\n", data.len()).into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\nendstream");
+        self.put(id, body);
+        id
+    }
 
-    // Słownik podpisu z miejscem na ByteRange i podpis CMS.
-    let mut s = b"<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /ByteRange ".to_vec();
+    /// Pole podpisu (widżet) na stronie `page_no` ze słownikiem podpisu `sig_dict`.
+    pub fn add_signature_field(&mut self, sig_dict: Vec<u8>, field_name: &str, page_no: u32, visible: Option<&Visible>) -> Res<()> {
+        let pages = self.doc.get_pages();
+        let page_id = *pages.get(&page_no).ok_or("Nie ma takiej strony.")?;
+        let mut page = self.doc.get_object(page_id).and_then(Object::as_dict).map_err(|e| e.to_string())?.clone();
+        let sig_id = self.alloc();
+        let widget_id = self.alloc();
+        self.put(sig_id, sig_dict);
+
+        let mut widget = Dictionary::new();
+        widget.set("Type", name("Annot"));
+        widget.set("Subtype", name("Widget"));
+        widget.set("FT", name("Sig"));
+        widget.set("T", text_string(&format!("{field_name}_{}", sig_id.0)));
+        widget.set("V", Object::Reference(sig_id));
+        widget.set("F", Object::Integer(132)); // drukowanie + zablokowana
+        widget.set("P", Object::Reference(page_id));
+        let rect = visible.map(|v| v.rect).unwrap_or([0.0; 4]);
+        widget.set("Rect", Object::Array(rect.iter().map(|v| Object::Real(*v)).collect()));
+        if let Some(v) = visible {
+            let (f1, f2) = (self.alloc(), self.alloc());
+            let ids: [ObjectId; 7] = std::array::from_fn(|_| self.alloc());
+            self.put(f1, font_dict("Helvetica"));
+            self.put(f2, font_dict("Helvetica-Bold"));
+            self.objs.extend(appearance(v, f1, f2, ids));
+            let mut apd = Dictionary::new();
+            apd.set("N", Object::Reference(ids[0]));
+            widget.set("AP", Object::Dictionary(apd));
+        }
+        self.put(widget_id, dict_bytes(&widget));
+
+        let mut annots = resolve_array(&self.doc, page.get(b"Annots").ok());
+        annots.push(Object::Reference(widget_id));
+        page.set("Annots", Object::Array(annots));
+        self.put(page_id, dict_bytes(&page));
+
+        let add_field = |doc: &Document, form: &mut Dictionary| {
+            let mut fields = resolve_array(doc, form.get(b"Fields").ok());
+            fields.push(Object::Reference(widget_id));
+            form.set("Fields", Object::Array(fields));
+            form.set("SigFlags", Object::Integer(3));
+        };
+        match self.catalog.get(b"AcroForm") {
+            Ok(Object::Reference(r)) => {
+                let r = *r;
+                let mut form = self.doc.get_object(r).and_then(Object::as_dict).cloned().unwrap_or_default();
+                add_field(&self.doc, &mut form);
+                self.put(r, dict_bytes(&form));
+            }
+            other => {
+                let mut form = match other {
+                    Ok(Object::Dictionary(d)) => d.clone(),
+                    _ => Dictionary::new(),
+                };
+                add_field(&self.doc, &mut form);
+                self.catalog.set("AcroForm", Object::Dictionary(form));
+                self.catalog_dirty = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Dopisuje obiekty, tablicę odsyłaczy (w formacie poprzedniej) i trailer.
+    pub fn finish(mut self) -> Res<Vec<u8>> {
+        let bytes = self.bytes;
+        let prev = last_startxref(bytes).ok_or("Nie znaleziono tablicy odsyłaczy (xref) w pliku PDF.")?;
+        let xref_stream = !bytes.get(prev..).is_some_and(|b| b.starts_with(b"xref"));
+        if self.catalog_dirty {
+            let body = dict_bytes(&self.catalog);
+            self.put(self.root_id, body);
+        }
+        let mut out = bytes.to_vec();
+        if !out.ends_with(b"\n") {
+            out.push(b'\n');
+        }
+        let mut offsets: Vec<(ObjectId, usize)> = Vec::new();
+        for (id, body) in &self.objs {
+            offsets.push((*id, out.len()));
+            out.extend_from_slice(format!("{} {} obj\n", id.0, id.1).as_bytes());
+            out.extend_from_slice(body);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let new_id = Object::String(Sha256::digest(&out)[..16].to_vec(), StringFormat::Hexadecimal);
+        let ids = match self.doc.trailer.get(b"ID") {
+            Ok(Object::Array(a)) if a.len() == 2 => Object::Array(vec![a[0].clone(), new_id]),
+            _ => Object::Array(vec![new_id.clone(), new_id]),
+        };
+        let mut trailer = Dictionary::new();
+        trailer.set("Root", Object::Reference(self.root_id));
+        if let Ok(info) = self.doc.trailer.get(b"Info") {
+            trailer.set("Info", info.clone());
+        }
+        trailer.set("ID", ids);
+        trailer.set("Prev", Object::Integer(prev as i64));
+
+        let startxref;
+        if xref_stream {
+            let xid = self.alloc();
+            offsets.push((xid, out.len()));
+            offsets.sort();
+            let mut data = Vec::new();
+            let mut index = Vec::new();
+            for ((id, gen), off) in &offsets {
+                data.push(1u8);
+                data.extend_from_slice(&(*off as u32).to_be_bytes());
+                data.extend_from_slice(&gen.to_be_bytes());
+                index.extend([Object::Integer(*id as i64), Object::Integer(1)]);
+            }
+            trailer.set("Type", name("XRef"));
+            trailer.set("Size", Object::Integer(self.next as i64));
+            trailer.set("W", Object::Array(vec![Object::Integer(1), Object::Integer(4), Object::Integer(2)]));
+            trailer.set("Index", Object::Array(index));
+            trailer.set("Length", Object::Integer(data.len() as i64));
+            startxref = out.len();
+            out.extend_from_slice(format!("{} 0 obj\n", xid.0).as_bytes());
+            ser_dict(&trailer, &mut out);
+            out.extend_from_slice(b"\nstream\n");
+            out.extend(data);
+            out.extend_from_slice(b"\nendstream\nendobj\n");
+        } else {
+            offsets.sort();
+            startxref = out.len();
+            out.extend_from_slice(b"xref\n");
+            let mut i = 0;
+            while i < offsets.len() {
+                let mut j = i + 1;
+                while j < offsets.len() && offsets[j].0 .0 == offsets[j - 1].0 .0 + 1 {
+                    j += 1;
+                }
+                out.extend_from_slice(format!("{} {}\n", offsets[i].0 .0, j - i).as_bytes());
+                for ((_, gen), off) in &offsets[i..j] {
+                    out.extend_from_slice(format!("{off:010} {gen:05} n\r\n").as_bytes());
+                }
+                i = j;
+            }
+            trailer.set("Size", Object::Integer(self.next as i64));
+            out.extend_from_slice(b"trailer\n");
+            ser_dict(&trailer, &mut out);
+            out.push(b'\n');
+        }
+        out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+        Ok(out)
+    }
+}
+
+/// Słownik podpisu z miejscem na /ByteRange i /Contents (`extra` — dalsze klucze, np. /M, /Reason).
+fn sig_dict(kind: &[u8], sub_filter: &[u8], extra: &[u8]) -> Vec<u8> {
+    let mut s = b"<< /Type /".to_vec();
+    s.extend_from_slice(kind);
+    s.extend_from_slice(b" /Filter /Adobe.PPKLite /SubFilter /");
+    s.extend_from_slice(sub_filter);
+    s.extend_from_slice(b" /ByteRange ");
     s.extend_from_slice(BR_PLACEHOLDER);
     s.extend_from_slice(b" /Contents <");
     s.extend(std::iter::repeat_n(b'0', CONTENTS_BYTES * 2));
-    s.extend_from_slice(b"> /M ");
-    ser(&text_string(&o.signing_time), &mut s);
-    s.extend_from_slice(b" /Name ");
-    ser(&text_string(signer_name), &mut s);
-    for (key, val) in [(&b" /Reason "[..], &o.reason), (b" /Location ", &o.location)] {
-        if let Some(v) = val.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-            s.extend_from_slice(key);
-            ser(&text_string(v), &mut s);
-        }
-    }
+    s.extend_from_slice(b">");
+    s.extend_from_slice(extra);
     s.extend_from_slice(b" /Prop_Build << /App << /Name /PDF#20Workbench >> >> >>");
-    objs.push((sig_id, s));
+    s
+}
 
-    // Pole podpisu połączone z adnotacją (widżetem).
-    let digits: String = o.signing_time.chars().filter(char::is_ascii_digit).take(14).collect();
-    let mut widget = Dictionary::new();
-    widget.set("Type", name("Annot"));
-    widget.set("Subtype", name("Widget"));
-    widget.set("FT", name("Sig"));
-    widget.set("T", text_string(&format!("Podpis_{digits}_{}", sig_id.0)));
-    widget.set("V", Object::Reference(sig_id));
-    widget.set("F", Object::Integer(132)); // drukowanie + zablokowana
-    widget.set("P", Object::Reference(page_id));
-    let rect = o.visible.as_ref().map(|v| v.rect).unwrap_or([0.0; 4]);
-    widget.set("Rect", Object::Array(rect.iter().map(|v| Object::Real(*v)).collect()));
-    if let Some(v) = &o.visible {
-        let (f1, f2) = (take(&mut next), take(&mut next));
-        let ids: [ObjectId; 7] = std::array::from_fn(|_| take(&mut next));
-        let ap = ids[0];
-        objs.push((f1, font_dict("Helvetica")));
-        objs.push((f2, font_dict("Helvetica-Bold")));
-        objs.extend(appearance(v, f1, f2, ids));
-        let mut apd = Dictionary::new();
-        apd.set("N", Object::Reference(ap));
-        widget.set("AP", Object::Dictionary(apd));
-    }
-    objs.push((widget_id, dict_bytes(&widget)));
-
-    let mut annots = resolve_array(&doc, page.get(b"Annots").ok());
-    annots.push(Object::Reference(widget_id));
-    page.set("Annots", Object::Array(annots));
-    objs.push((page_id, dict_bytes(&page)));
-
-    match catalog.get(b"AcroForm") {
-        Ok(Object::Reference(r)) => {
-            let r = *r;
-            let mut form = doc.get_object(r).and_then(Object::as_dict).cloned().unwrap_or_default();
-            add_field(&doc, &mut form, widget_id);
-            objs.push((r, dict_bytes(&form)));
-        }
-        other => {
-            let mut form = match other {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => Dictionary::new(),
-            };
-            add_field(&doc, &mut form, widget_id);
-            catalog.set("AcroForm", Object::Dictionary(form));
-            objs.push((root_id, dict_bytes(&catalog)));
-        }
-    }
-
-    // Aktualizacja przyrostowa.
-    let mut out = bytes.to_vec();
-    if !out.ends_with(b"\n") {
-        out.push(b'\n');
-    }
-    let mut offsets: Vec<(ObjectId, usize)> = Vec::new();
-    for (id, body) in &objs {
-        offsets.push((*id, out.len()));
-        out.extend_from_slice(format!("{} {} obj\n", id.0, id.1).as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let new_id = Object::String(Sha256::digest(&out)[..16].to_vec(), StringFormat::Hexadecimal);
-    let ids = match doc.trailer.get(b"ID") {
-        Ok(Object::Array(a)) if a.len() == 2 => Object::Array(vec![a[0].clone(), new_id]),
-        _ => Object::Array(vec![new_id.clone(), new_id]),
-    };
-    let mut trailer = Dictionary::new();
-    trailer.set("Root", Object::Reference(root_id));
-    if let Ok(info) = doc.trailer.get(b"Info") {
-        trailer.set("Info", info.clone());
-    }
-    trailer.set("ID", ids);
-    trailer.set("Prev", Object::Integer(prev as i64));
-
-    let startxref;
-    if xref_stream {
-        let xid = take(&mut next);
-        offsets.push((xid, out.len()));
-        offsets.sort();
-        let mut data = Vec::new();
-        let mut index = Vec::new();
-        for ((id, gen), off) in &offsets {
-            data.push(1u8);
-            data.extend_from_slice(&(*off as u32).to_be_bytes());
-            data.extend_from_slice(&gen.to_be_bytes());
-            index.extend([Object::Integer(*id as i64), Object::Integer(1)]);
-        }
-        trailer.set("Type", name("XRef"));
-        trailer.set("Size", Object::Integer(next as i64));
-        trailer.set("W", Object::Array(vec![Object::Integer(1), Object::Integer(4), Object::Integer(2)]));
-        trailer.set("Index", Object::Array(index));
-        trailer.set("Length", Object::Integer(data.len() as i64));
-        startxref = out.len();
-        out.extend_from_slice(format!("{} 0 obj\n", xid.0).as_bytes());
-        ser_dict(&trailer, &mut out);
-        out.extend_from_slice(b"\nstream\n");
-        out.extend(data);
-        out.extend_from_slice(b"\nendstream\nendobj\n");
-    } else {
-        offsets.sort();
-        startxref = out.len();
-        out.extend_from_slice(b"xref\n");
-        let mut i = 0;
-        while i < offsets.len() {
-            let mut j = i + 1;
-            while j < offsets.len() && offsets[j].0 .0 == offsets[j - 1].0 .0 + 1 {
-                j += 1;
-            }
-            out.extend_from_slice(format!("{} {}\n", offsets[i].0 .0, j - i).as_bytes());
-            for ((_, gen), off) in &offsets[i..j] {
-                out.extend_from_slice(format!("{off:010} {gen:05} n\r\n").as_bytes());
-            }
-            i = j;
-        }
-        trailer.set("Size", Object::Integer(next as i64));
-        out.extend_from_slice(b"trailer\n");
-        ser_dict(&trailer, &mut out);
-        out.push(b'\n');
-    }
-    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
-
-    let base = bytes.len();
+/// Uzupełnia /ByteRange i wpisuje do /Contents wynik `make(podpisane bajty)`.
+/// `base` — długość pliku przed aktualizacją (miejsce na podpis jest tylko w dopisanej części).
+fn seal(mut out: Vec<u8>, base: usize, make: impl FnOnce(&[u8]) -> Res<Vec<u8>>) -> Res<Vec<u8>> {
     let lt = find(&out[base..], b"/Contents <0000").ok_or("Błąd przygotowania podpisu.")? + base + 10;
     let gt = lt + 2 + CONTENTS_BYTES * 2;
     if out.get(gt - 1) != Some(&b'>') {
         return Err("Błąd przygotowania podpisu.".into());
     }
-    Ok((out, lt, gt))
-}
-
-fn sign_with(bytes: &[u8], o: &SignOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>]) -> Res<Vec<u8>> {
-    let (mut out, lt, gt) = prepare(bytes, o, &cert.name(false))?;
-    let base = bytes.len();
     let p = find(&out[base..], BR_PLACEHOLDER).ok_or("Błąd przygotowania podpisu.")? + base;
     let mut br = format!("[0 {lt} {gt} {}]", out.len() - gt).into_bytes();
     br.resize(BR_PLACEHOLDER.len(), b' ');
     out[p..p + br.len()].copy_from_slice(&br);
-
     let data = [&out[..lt], &out[gt..]].concat();
-    let tsa = o.timestamp.then_some(DEFAULT_TSA);
-    let cms = cms_sign(&data, cert, key, chain, tsa)?;
-    let hexed = hex::encode_upper(&cms);
+    let contents = make(&data)?;
+    let hexed = hex::encode_upper(&contents);
     if hexed.len() > CONTENTS_BYTES * 2 {
         return Err("Podpis nie mieści się w zarezerwowanym miejscu.".into());
     }
@@ -1080,12 +1176,180 @@ fn sign_with(bytes: &[u8], o: &SignOptions, cert: &Cert, key: &Key, chain: &[Vec
     Ok(out)
 }
 
-/// Podpisuje PDF certyfikatem z magazynu Windows (PAdES, opcjonalnie ze znacznikiem czasu).
-pub fn sign_pdf(bytes: &[u8], o: &SignOptions) -> Res<Vec<u8>> {
+fn sign_with(bytes: &[u8], o: &SignOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>]) -> Res<Vec<u8>> {
+    let mut extra = b" /M ".to_vec();
+    ser(&text_string(&o.signing_time), &mut extra);
+    extra.extend_from_slice(b" /Name ");
+    ser(&text_string(&cert.name(false)), &mut extra);
+    for (key, val) in [(&b" /Reason "[..], &o.reason), (b" /Location ", &o.location)] {
+        if let Some(v) = val.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            extra.extend_from_slice(key);
+            ser(&text_string(v), &mut extra);
+        }
+    }
+    let mut up = Update::open(bytes)?;
+    let digits: String = o.signing_time.chars().filter(char::is_ascii_digit).take(14).collect();
+    let page = o.visible.as_ref().map(|v| v.page).unwrap_or(1);
+    up.add_signature_field(sig_dict(b"Sig", b"ETSI.CAdES.detached", &extra), &format!("Podpis_{digits}"), page, o.visible.as_ref())?;
+    let out = up.finish()?;
+    let tsa = o.timestamp.then_some(DEFAULT_TSA);
+    seal(out, bytes.len(), |data| cms_sign(data, cert, key, chain, tsa))
+}
+
+/// Znacznik czasu dokumentu (PAdES-LTA): niewidoczne pole z tokenem RFC 3161 nad całym plikiem.
+pub(crate) fn add_document_timestamp(bytes: &[u8], url: &str) -> Res<Vec<u8>> {
+    let mut up = Update::open(bytes)?;
+    up.add_signature_field(sig_dict(b"DocTimeStamp", b"ETSI.RFC3161", b""), "Znacznik_czasu", 1, None)?;
+    let out = up.finish()?;
+    seal(out, bytes.len(), |data| timestamp(url, data))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignReport {
+    /// Osiągnięty poziom PAdES: „B-B”, „B-T” albo „B-LTA”.
+    pub level: &'static str,
+    /// Ostrzeżenie, gdy nie udało się dodać danych długoterminowej weryfikacji.
+    pub warning: Option<String>,
+}
+
+/// Podpis + opcjonalnie dane do długoterminowej weryfikacji (DSS) i znacznik czasu dokumentu.
+fn sign_full(bytes: &[u8], o: &SignOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>]) -> Res<(Vec<u8>, SignReport)> {
+    let signed = sign_with(bytes, o, cert, key, chain)?;
+    let base_level = if o.timestamp { "B-T" } else { "B-B" };
+    if !(o.ltv && o.timestamp) {
+        return Ok((signed, SignReport { level: base_level, warning: None }));
+    }
+    match ltv::add_ltv(&signed).and_then(|with_dss| add_document_timestamp(&with_dss, DEFAULT_TSA)) {
+        Ok(out) => Ok((out, SignReport { level: "B-LTA", warning: None })),
+        Err(e) => Ok((
+            signed,
+            SignReport { level: base_level, warning: Some(format!("Podpisano, ale bez danych do długoterminowej weryfikacji: {e}")) },
+        )),
+    }
+}
+
+/// Podpisuje PDF certyfikatem z magazynu Windows (PAdES, opcjonalnie ze znacznikiem czasu i LTA).
+pub fn sign_pdf(bytes: &[u8], o: &SignOptions) -> Res<(Vec<u8>, SignReport)> {
     let cert = find_cert(&o.cert_id)?;
     let key = acquire_key(&cert)?;
     let chain = chain_certs(&cert);
-    sign_with(bytes, o, &cert, &key, &chain)
+    sign_full(bytes, o, &cert, &key, &chain)
+}
+
+/// Odpowiedź [u32 LE długość JSON][JSON][PDF].
+pub fn pack<T: Serialize>(pdf: Vec<u8>, report: &T) -> Vec<u8> {
+    let json = serde_json::to_vec(report).unwrap_or_default();
+    let mut out = (json.len() as u32).to_le_bytes().to_vec();
+    out.extend(json);
+    out.extend(pdf);
+    out
+}
+
+/// Strona PDF: prostokąt MediaBox (z dziedziczeniem po drzewie stron).
+fn media_box(doc: &Document, page_id: ObjectId) -> [f32; 4] {
+    let mut id = Some(page_id);
+    for _ in 0..32 {
+        let Some(cur) = id else { break };
+        let Ok(d) = doc.get_object(cur).and_then(Object::as_dict) else { break };
+        if let Ok(arr) = d.get(b"MediaBox").and_then(|o| match o {
+            Object::Reference(r) => doc.get_object(*r),
+            o => Ok(o),
+        }).and_then(Object::as_array)
+        {
+            let v: Vec<f32> = arr.iter().filter_map(|x| x.as_float().ok().or_else(|| x.as_i64().ok().map(|i| i as f32))).collect();
+            if v.len() == 4 {
+                return [v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])];
+            }
+        }
+        id = d.get(b"Parent").and_then(Object::as_reference).ok();
+    }
+    [0.0, 0.0, 595.0, 842.0]
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchOptions {
+    pub paths: Vec<String>,
+    pub sign: SignOptions,
+    /// Wiersze widocznego podpisu; brak — podpis niewidoczny.
+    pub visible_lines: Option<Vec<String>>,
+    /// Miejsce widocznego podpisu dla kolejnych plików (jak `paths`); brak — prawy dolny róg
+    /// ostatniej strony. Strona dalej niż koniec dokumentu oznacza ostatnią.
+    #[serde(default)]
+    pub placements: Vec<Option<Placement>>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Placement {
+    pub page: u32,
+    pub rect: [f32; 4],
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItem {
+    pub path: String,
+    pub output: Option<String>,
+    pub level: Option<&'static str>,
+    pub warning: Option<String>,
+    pub error: Option<String>,
+}
+
+fn output_path(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "dokument".into());
+    let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let mut n = 1;
+    loop {
+        let name = if n == 1 { format!("{stem} (podpisany).pdf") } else { format!("{stem} (podpisany {n}).pdf") };
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+        n += 1;
+    }
+}
+
+/// Podpisuje wiele plików jednym certyfikatem (klucz pobierany raz). Wynik każdego pliku
+/// trafia do `progress` zaraz po podpisaniu; podpisane kopie obok oryginałów.
+pub fn sign_files(o: &BatchOptions, progress: impl FnMut(usize, &BatchItem)) -> Res<Vec<BatchItem>> {
+    let cert = find_cert(&o.sign.cert_id)?;
+    let key = acquire_key(&cert)?;
+    let chain = chain_certs(&cert);
+    sign_files_with(o, &cert, &key, &chain, progress)
+}
+
+fn sign_files_with(o: &BatchOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>], mut progress: impl FnMut(usize, &BatchItem)) -> Res<Vec<BatchItem>> {
+    let mut results = Vec::new();
+    for (i, path) in o.paths.iter().enumerate() {
+        let item = (|| -> Res<BatchItem> {
+            let bytes = std::fs::read(path).map_err(|e| format!("Nie można odczytać pliku: {e}"))?;
+            let mut opts = SignOptions { visible: None, ..o.sign.clone() };
+            if let Some(lines) = &o.visible_lines {
+                let doc = Document::load_mem(&bytes).map_err(|e| format!("Nie można odczytać PDF: {e}"))?;
+                let pages = doc.get_pages();
+                let (&last, &page_id) = pages.iter().next_back().ok_or("Dokument nie ma stron.")?;
+                let (page, rect) = match o.placements.get(i).cloned().flatten() {
+                    Some(p) => (p.page.clamp(1, last), p.rect),
+                    None => {
+                        let mb = media_box(&doc, page_id);
+                        let (w, h) = (220.0_f32.min((mb[2] - mb[0]) * 0.45), 62.0);
+                        (last, [mb[2] - 36.0 - w, mb[1] + 36.0, mb[2] - 36.0, mb[1] + 36.0 + h])
+                    }
+                };
+                opts.visible = Some(Visible { page, rect, lines: lines.clone() });
+            }
+            let (out, report) = sign_full(&bytes, &opts, cert, key, chain)?;
+            let target = output_path(path);
+            std::fs::write(&target, &out).map_err(|e| format!("Nie można zapisać pliku: {e}"))?;
+            Ok(BatchItem { path: path.clone(), output: Some(target), level: Some(report.level), warning: report.warning, error: None })
+        })()
+        .unwrap_or_else(|e| BatchItem { path: path.clone(), output: None, level: None, warning: None, error: Some(e) });
+        progress(i, &item);
+        results.push(item);
+    }
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -1141,6 +1405,7 @@ mod tests {
             reason: Some("Akceptuję treść umowy".into()),
             location: Some("Łódź".into()),
             timestamp: ts,
+            ltv: false,
             visible: Some(Visible {
                 page,
                 rect: [330.0, 40.0, 560.0, 100.0],
@@ -1191,6 +1456,148 @@ mod tests {
                 let raw = decode_hex(&signed[lt + 1..lt + 1 + CONTENTS_BYTES * 2]);
                 std::fs::write(format!("{dir}/{stem}.p7s"), &raw[..der_len(&raw).unwrap()]).unwrap();
             }
+        }
+    }
+
+    /// PAdES-LTA ze znacznikiem czasu Certum, CRL i unijną listą zaufanych (wymaga sieci:
+    /// uruchamiany, gdy ustawiono PDFWB_TEST_TSA).
+    #[test]
+    fn lta_and_trust() {
+        if std::env::var("PDFWB_TEST_TSA").is_err() {
+            return;
+        }
+        let (cert, key) = ephemeral();
+        let pdf = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/umowa-testowa.pdf")).unwrap();
+        let mut o = opts(1, true);
+        o.ltv = true;
+        let (out, report) = sign_full(&pdf, &o, &cert, &key, &[]).unwrap();
+        assert_eq!(report.level, "B-LTA", "{:?}", report.warning);
+        Document::load_mem(&out).unwrap();
+        let s = inspect(&out);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].kind, "signature");
+        assert!(s[0].intact && !s[0].covers_whole && s[0].timestamped);
+        assert_eq!(s[1].kind, "timestamp");
+        assert!(s[1].intact && s[1].covers_whole, "{:?}", s[1].problem);
+        assert!(ltv::has_ltv(&out));
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = std::env::temp_dir().join("pdfwb-tsl-test");
+        let http = reqwest::Client::new();
+        let pl = rt.block_on(trust::tl_services(&http, &dir, "PL")).unwrap();
+        let ca = pl.iter().filter(|x| x.kind == "ca").count();
+        let tsa = pl.iter().filter(|x| x.kind == "tsa").count();
+        eprintln!("PL TL: {ca} usług CA/QC, {tsa} TSA/QTST; np. {:?}", pl.iter().map(|x| &x.name).take(6).collect::<Vec<_>>());
+        assert!(ca > 0);
+        let countries = issuer_countries(&out);
+        eprintln!("kraje wystawców: {countries:?}");
+        let mut lists = std::collections::HashMap::new();
+        lists.insert("PL".to_string(), pl);
+        let t = check_trust(&out, &lists, &[]);
+        for x in &t {
+            eprintln!("zaufanie: chain={} {:?} rev={} eu={} {:?} czas={:?} tsq={} ltv={} {:?}", x.chain_trusted, x.chain, x.revocation, x.eu_qualified, x.eu_service, x.trusted_time, x.timestamp_qualified, x.ltv, x.notes);
+        }
+        assert_eq!(t.len(), 2);
+        assert!(t[0].trusted_time.is_some() && !t[0].eu_qualified && t[0].ltv);
+        if let Ok(dir) = std::env::var("PDFWB_TEST_OUT") {
+            std::fs::write(format!("{dir}/umowa-lta.pdf"), &out).unwrap();
+        }
+    }
+
+    #[test]
+    fn batch_signs_copies_next_to_originals() {
+        let (cert, key) = ephemeral();
+        let dir = std::env::temp_dir().join(format!("pdfwb-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/../samples");
+        let mut paths = Vec::new();
+        for name in ["umowa-testowa.pdf", "skan-testowy.pdf"] {
+            let target = dir.join(name);
+            std::fs::copy(format!("{samples}/{name}"), &target).unwrap();
+            paths.push(target.to_string_lossy().to_string());
+        }
+        paths.push(dir.join("brak.pdf").to_string_lossy().to_string());
+        let o = BatchOptions {
+            paths,
+            sign: SignOptions { visible: None, ..opts(1, false) },
+            visible_lines: Some(vec!["Podpisany elektronicznie przez:".into(), "Test".into()]),
+            placements: vec![None, Some(Placement { page: 99, rect: [50.0, 50.0, 250.0, 110.0] })],
+        };
+        let mut seen = Vec::new();
+        let r = sign_files_with(&o, &cert, &key, &[], |i, _| seen.push(i)).unwrap();
+        assert_eq!(seen, vec![0, 1, 2]);
+        assert!(r[2].error.is_some());
+        for it in &r[..2] {
+            let out = it.output.as_ref().expect("plik wynikowy");
+            assert!(out.ends_with(" (podpisany).pdf"), "{out}");
+            let bytes = std::fs::read(out).unwrap();
+            let s = inspect(&bytes);
+            assert!(s.len() == 1 && s[0].intact && s[0].covers_whole);
+            // Widoczny podpis na ostatniej stronie.
+            let doc = Document::load_mem(&bytes).unwrap();
+            let last = *doc.get_pages().iter().next_back().unwrap().1;
+            let page = doc.get_object(last).unwrap().as_dict().unwrap();
+            assert!(page.get(b"Annots").is_ok());
+            if out.contains("skan-testowy") {
+                // Wskazane miejsce (strona 99 → ostatnia): lewy dolny róg.
+                assert!(find(&bytes[bytes.len() - 60_000..], b"/Rect [50 50 250 110]").is_some());
+            }
+        }
+        // Kolejny podpis tego samego pliku nie nadpisuje poprzedniej kopii.
+        let again = sign_files_with(&BatchOptions { paths: o.paths[..1].to_vec(), ..o }, &cert, &key, &[], |_, _| {}).unwrap();
+        assert!(again[0].output.as_ref().unwrap().ends_with(" (podpisany 2).pdf"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Warianty do ręcznego sprawdzenia w Acrobacie (PDFWB_TEST_VARIANTS=katalog).
+    #[test]
+    fn variants_for_acrobat() {
+        let Ok(dir) = std::env::var("PDFWB_TEST_VARIANTS") else { return };
+        let (cert, key) = ephemeral();
+        let pdf = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/umowa-testowa.pdf")).unwrap();
+        let signed = sign_with(&pdf, &opts(1, true), &cert, &key, &[]).unwrap();
+        std::fs::write(format!("{dir}/v-bt.pdf"), &signed).unwrap();
+        std::fs::write(format!("{dir}/v-doc-ts.pdf"), add_document_timestamp(&signed, DEFAULT_TSA).unwrap()).unwrap();
+        std::fs::write(format!("{dir}/v-dss.pdf"), ltv::add_ltv(&signed).unwrap()).unwrap();
+    }
+
+    /// Pełny PAdES-LTA z realistycznym łańcuchem (testowe CA + certyfikat z CRL) z pliku PFX
+    /// importowanego tylko do pamięci. PDFWB_TEST_PFX=katalog z leaf.pfx i ca.der.
+    #[test]
+    fn lta_with_test_ca() {
+        let Ok(dir) = std::env::var("PDFWB_TEST_PFX") else { return };
+        unsafe {
+            let mut pfx = std::fs::read(format!("{dir}/leaf.pfx")).unwrap();
+            let blob = CRYPT_INTEGER_BLOB { cbData: pfx.len() as u32, pbData: pfx.as_mut_ptr() };
+            let store = Store(PFXImportCertStore(&blob, w!("test"), PKCS12_NO_PERSIST_KEY | PKCS12_ALWAYS_CNG_KSP).unwrap());
+            let mut prev: *mut CERT_CONTEXT = null_mut();
+            let mut leaf = None;
+            loop {
+                prev = CertEnumCertificatesInStore(store.0, if prev.is_null() { None } else { Some(prev) });
+                if prev.is_null() {
+                    break;
+                }
+                let c = Cert(CertDuplicateCertificateContext(Some(prev)));
+                if c.has_private_key() {
+                    leaf = Some(c);
+                }
+            }
+            let cert = leaf.expect("certyfikat z kluczem");
+            // Klucz nieutrwalony: uchwyt CNG jest we właściwości certyfikatu.
+            let mut h = 0usize;
+            let mut n = std::mem::size_of::<usize>() as u32;
+            CertGetCertificateContextProperty(cert.0, CERT_NCRYPT_KEY_HANDLE_PROP_ID, Some(&mut h as *mut usize as *mut c_void), &mut n).unwrap();
+            let key = Key { handle: HCRYPTPROV_OR_NCRYPT_KEY_HANDLE(h), spec: CERT_NCRYPT_KEY_SPEC, free: false };
+            let ca = std::fs::read(format!("{dir}/ca.der")).unwrap();
+            let pdf = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/umowa-testowa.pdf")).unwrap();
+            let mut o = opts(1, true);
+            o.ltv = true;
+            o.visible.as_mut().unwrap().lines[1] = cert.name(false);
+            let (out, report) = sign_full(&pdf, &o, &cert, &key, &[ca]).unwrap();
+            assert_eq!(report.level, "B-LTA", "{:?}", report.warning);
+            std::fs::write(format!("{dir}/lta-ca.pdf"), &out).unwrap();
+            let s = inspect(&out);
+            assert!(s.iter().all(|x| x.intact));
         }
     }
 }

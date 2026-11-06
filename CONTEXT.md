@@ -74,6 +74,14 @@ _Unikaj_: dokument zablokowany, plik tylko do odczytu
 Świadoma decyzja użytkownika, że chce edytować Podpisany dokument mimo utraty ważności podpisu. Obowiązuje do zamknięcia lub ponownego wczytania Dokumentu.
 _Unikaj_: tryb serwisowy, wymuszenie
 
+**Długoterminowa weryfikacja**:
+Dane dołączone do Dokumentu po podpisie (certyfikaty, listy unieważnień i znacznik czasu całego dokumentu), dzięki którym podpis da się sprawdzić także po wygaśnięciu certyfikatów (PAdES-LTA).
+_Unikaj_: LTV, archiwizacja podpisu
+
+**Podpis kwalifikowany**:
+Podpis elektroniczny złożony certyfikatem kwalifikowanym od wystawcy z unijnej listy zaufanych.
+_Unikaj_: podpis ważny prawnie, e-podpis
+
 **Naruszony podpis**:
 Podpis elektroniczny, który nie zgadza się już z treścią Dokumentu, bo plik zmieniono po podpisaniu. Nie blokuje edycji.
 _Unikaj_: zły podpis, podpis wygasły

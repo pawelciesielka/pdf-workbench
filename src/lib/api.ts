@@ -176,7 +176,48 @@ export interface SignOptions {
   reason?: string;
   location?: string;
   timestamp: boolean;
+  /** Dane do długoterminowej weryfikacji i znacznik czasu dokumentu (PAdES-LTA). */
+  ltv: boolean;
   visible?: { page: number; rect: [number, number, number, number]; lines: string[] };
+}
+
+export interface SignReport {
+  level: "B-B" | "B-T" | "B-LTA";
+  warning: string | null;
+}
+
+/** Zaufanie do podpisu (w kolejności `signatures`). */
+export interface TrustInfo {
+  chainTrusted: boolean;
+  chain: string[];
+  revocation: "good" | "revoked" | "unknown";
+  euQualified: boolean;
+  euService: string | null;
+  trustedTime: number | null;
+  timestampQualified: boolean;
+  ltv: boolean;
+  notes: string[];
+}
+
+/** Miejsce widocznego podpisu: strona (100000 = ostatnia) i prostokąt w punktach PDF. */
+export interface Placement {
+  page: number;
+  rect: [number, number, number, number];
+}
+
+export interface BatchItem {
+  path: string;
+  output: string | null;
+  level: SignReport["level"] | null;
+  warning: string | null;
+  error: string | null;
+}
+
+/** Odpowiedź [u32 LE długość JSON][JSON][PDF]. */
+function unpackReport<T>(buf: ArrayBuffer): { data: Uint8Array; report: T } {
+  const all = new Uint8Array(buf);
+  const len = new DataView(buf).getUint32(0, true);
+  return { report: JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + len))) as T, data: all.slice(4 + len) };
 }
 
 /** Odpowiedź [u32 LE długość JSON][JSON][PDF]. */
@@ -201,7 +242,13 @@ export const api = {
     rawInvoke<{ document: DocumentInfo; backupPath: string | null }>("save_document", data, meta),
   signatures: (data: Uint8Array) => rawInvoke<SignatureInfo[]>("pdf_signatures", data, null),
   signingCerts: () => invoke<SigningCert[]>("signing_certs"),
-  signPdf: (data: Uint8Array, o: SignOptions) => rawInvoke<ArrayBuffer>("sign_pdf", data, o).then(bytes),
+  signPdf: (data: Uint8Array, o: SignOptions) => rawInvoke<ArrayBuffer>("sign_pdf", data, o).then((b) => unpackReport<SignReport>(b)),
+  signatureTrust: (data: Uint8Array) => rawInvoke<TrustInfo[]>("signature_trust", data, null),
+  signFiles: (options: { paths: string[]; sign: SignOptions; visibleLines: string[] | null; placements: (Placement | null)[] }, onProgress: (index: number, item: BatchItem) => void) => {
+    const channel = new Channel<{ index: number; item: BatchItem }>();
+    channel.onmessage = (m) => onProgress(m.index, m.item);
+    return invoke<BatchItem[]>("sign_files", { options, onProgress: channel });
+  },
   rotatePages: (data: Uint8Array, pages: number[], degrees: number) => rawInvoke<ArrayBuffer>("rotate_pages", data, { pages, degrees }).then(bytes),
   rasterizePages: (body: Uint8Array, meta: { pdfLen: number; items: { page: number; offset: number; len: number; width: number; height: number }[] }) =>
     rawInvoke<ArrayBuffer>("rasterize_pages", body, meta).then(bytes),

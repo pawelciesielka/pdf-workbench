@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import type { EditOp, PageObject } from "../lib/api";
 
@@ -71,6 +71,48 @@ export function ColorInput({ value, title, onCommit }: { value: string; title: s
   return <input ref={ref} type="color" value={local} title={title} onChange={(e) => setLocal(e.target.value)} />;
 }
 
+const PRESET_COLORS = ["#000000", "#444444", "#ffffff", "#d92525", "#e8710a", "#f2c200", "#1e8e3e", "#1a73e8", "#2f5bd3", "#9334e6"];
+
+/** Kolor tekstu: gotowe kolory jednym kliknięciem i „Inny…” z pełnym wyborem. */
+function ColorMenu({ value, onPick }: { value: string; onPick(color: string): void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [open]);
+  const pick = (c: string) => {
+    setOpen(false);
+    if (c.toLowerCase() !== value.toLowerCase()) onPick(c);
+  };
+  return (
+    <div className="color-menu" ref={ref}>
+      <button className="color-btn" title={t("obj.color")} onClick={() => setOpen((v) => !v)}>
+        <span className="color-dot" style={{ background: value }} />▾
+      </button>
+      {open && (
+        <div className="color-pop">
+          {PRESET_COLORS.map((c) => (
+            <button
+              key={c}
+              className={`swatch ${c.toLowerCase() === value.toLowerCase() ? "on" : ""}`}
+              style={{ background: c }}
+              title={c}
+              onClick={() => pick(c)}
+            />
+          ))}
+          <label className="color-other" title={t("obj.colorOther")}>
+            <ColorInput value={value} title={t("obj.colorOther")} onCommit={pick} />
+            {t("obj.colorOther")}
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const area = (o: PageObject) => Math.max(0.01, (o.rect[2] - o.rect[0]) * (o.rect[3] - o.rect[1]));
 const cleanFont = (name?: string) => (name ?? "").replace(/^[A-Z]{6}\+/, "");
 
@@ -108,6 +150,24 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
     }
   }, [current, docKey, objects, layout]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Właśnie dodany tekst zostaje zaznaczony, gdy pojawi się na liście obiektów strony
+  // (od razu można go przesunąć albo zmienić mu kolor i rozmiar).
+  const pendingNew = useRef<{ page: number; text: string; known: number } | null>(null);
+  useEffect(() => {
+    const want = pendingNew.current;
+    const list = want && objects.get(want.page);
+    if (!want || !list) return;
+    const added = list.filter((o) => o.kind === "text" && o.text === want.text && o.index > want.known);
+    if (!added.length) return;
+    pendingNew.current = null;
+    setSel({ page: want.page, index: Math.max(...added.map((o) => o.index)) });
+  }, [objects]);
+
+  // Zaznaczenie znika, gdy obiektu nie ma już na stronie (np. po cofnięciu zmiany).
+  useEffect(() => {
+    if (sel && objects.get(sel.page) && !objects.get(sel.page)!.some((o) => o.index === sel.index)) setSel(null);
+  }, [objects]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const objectOf = (s: Sel | null) => (s ? objects.get(s.page)?.find((o) => o.index === s.index) : undefined);
 
   const boxOf = (page: number, o: PageObject): Box | null => {
@@ -122,18 +182,24 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
     return [e.clientX - r.left, e.clientY - r.top];
   };
 
-  /** Najmniejszy obiekt pod punktem (przy remisie wygrywa tekst). */
-  const hitTest = (p: Pt): Sel | null => {
+  /**
+   * Obiekt pod punktem. Tekst ma pierwszeństwo przed obrazami i tłem (i większy margines
+   * chwytu), wśród obiektów tego samego rodzaju wygrywa najmniejszy.
+   */
+  const hitTest = (p: Pt, textOnly = false): Sel | null => {
     const page = geom.pageAt(p[0], p[1]);
     if (!page) return null;
     const pdf = geom.toPdf(page, p[0], p[1]);
     const list = objects.get(page);
     if (!pdf || !list) return null;
-    const pad = 2 / geom.scale();
     let best: PageObject | null = null;
     for (const o of list) {
+      const isText = o.kind === "text";
+      if (textOnly && !isText) continue;
+      const pad = (isText ? 6 : 2) / geom.scale();
       if (pdf[0] < o.rect[0] - pad || pdf[0] > o.rect[2] + pad || pdf[1] < o.rect[1] - pad || pdf[1] > o.rect[3] + pad) continue;
-      if (!best || area(o) < area(best) * (o.kind === "text" ? 1.5 : 1)) best = o;
+      const bestText = best?.kind === "text";
+      if (!best || (isText && !bestText) || (isText === bestText && area(o) < area(best))) best = o;
     }
     return best ? { page, index: best.index } : null;
   };
@@ -165,19 +231,26 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0 || editing) return;
     const p = local(e);
-    if (mode === "addtext") {
+    // Klik w obrębie zaznaczonego obiektu zostawia zaznaczenie — chyba że pod kursorem jest
+    // tekst, a zaznaczone jest coś innego (np. tło albo obraz pod tekstem).
+    const cur = objectOf(sel);
+    const curBox = cur && sel ? boxOf(sel.page, cur) : null;
+    const grow = cur?.kind === "text" ? 6 : 0;
+    const inside =
+      curBox && p[0] >= curBox.left - grow && p[0] <= curBox.left + curBox.width + grow && p[1] >= curBox.top - grow && p[1] <= curBox.top + curBox.height + grow;
+    const under = hitTest(p, mode === "addtext");
+    const underText = objectOf(under)?.kind === "text";
+    if (mode === "addtext" && !under && !inside) {
+      // Nowy tekst tylko w pustym miejscu; istniejący tekst się zaznacza i przesuwa.
       const page = geom.pageAt(p[0], p[1]);
+      setSel(null);
       if (!page) return;
       e.preventDefault();
       const fontPx = textStyle.fontSize * geom.scale();
       setEditing({ page, index: null, box: { left: p[0], top: p[1] - fontPx * 0.15, width: 0, height: fontPx * 1.3 }, value: "", fontPx, at: p });
       return;
     }
-    // Klik w obrębie zaznaczonego obiektu zostawia zaznaczenie (np. tekst na tle obrazu).
-    const cur = objectOf(sel);
-    const curBox = cur && sel ? boxOf(sel.page, cur) : null;
-    const inside = curBox && p[0] >= curBox.left && p[0] <= curBox.left + curBox.width && p[1] >= curBox.top && p[1] <= curBox.top + curBox.height;
-    const hit = inside ? sel : hitTest(p);
+    const hit = inside && !(underText && cur?.kind !== "text") ? sel : under;
     setSel(hit);
     if (!hit) return;
     e.preventDefault();
@@ -285,6 +358,8 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
       if (!value.trim() || !ed.at) return;
       const top = geom.toPdf(ed.page, ed.at[0], ed.at[1]);
       if (!top) return;
+      const known = (objects.get(ed.page) ?? []).filter((o) => o.kind === "text" && o.text === value).map((o) => o.index);
+      pendingNew.current = { page: ed.page, text: value, known: Math.max(-1, ...known) };
       onOps([{ op: "addText", page: ed.page, x: top[0], y: top[1] - textStyle.fontSize * 0.8, text: value, fontSize: textStyle.fontSize, color: textStyle.color, bold: textStyle.bold }]);
       return;
     }
@@ -297,6 +372,35 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
   const applyStyle = (patch: { fontSize?: number; color?: string }) => {
     if (!sel || !selected || selected.kind !== "text") return;
     onOps([{ op: "setText", page: sel.page, index: sel.index, text: selected.text ?? "", ...patch }]);
+  };
+
+  /**
+   * Pasek nad zaznaczeniem (albo pod nim, gdy brak miejsca), zawsze w całości w obrębie
+   * strony — nie wychodzi poza prawą krawędź i nie zasłania zaznaczonego tekstu.
+   */
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarSize, setToolbarSize] = useState<[number, number]>([0, 0]);
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (el && (el.offsetWidth !== toolbarSize[0] || el.offsetHeight !== toolbarSize[1])) setToolbarSize([el.offsetWidth, el.offsetHeight]);
+  });
+  const toolbarPos = (box: Box): React.CSSProperties => {
+    const [w, h] = toolbarSize;
+    const pb = sel ? geom.pageBox(sel.page) : null;
+    const minX = pb ? pb.left : 0;
+    const maxX = (pb ? pb.left + pb.width : rootRef.current?.clientWidth ?? 0) - w;
+    const left = Math.max(minX, Math.min(box.left, maxX));
+    const gap = 8;
+    const pageTop = pb ? pb.top : 0;
+    const above = box.top - h - gap;
+    const top = above >= pageTop ? above : box.top + box.height + gap;
+    return { left, top };
+  };
+  /** Menu kolorów otwiera się od zaznaczenia — nie zasłania tekstu, któremu zmieniamy kolor. */
+  const popUp = (box: Box) => {
+    const pageTop = sel ? geom.pageBox(sel.page)?.top ?? 0 : 0;
+    const top = toolbarPos(box).top as number;
+    return top < box.top && top - 110 >= pageTop;
   };
 
   const hoverObj = !drag && hover && (hover.page !== sel?.page || hover.index !== sel?.index) ? objectOf(hover) : undefined;
@@ -313,9 +417,13 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
   return (
     <div
       ref={rootRef}
-      className={`object-layer mode-${mode}`}
+      className={`object-layer mode-${mode} ${hover || drag ? "over-obj" : ""}`}
       onMouseDown={onMouseDown}
-      onMouseMove={(e) => !drag && mode === "objects" && setHover(hitTest(local(e)))}
+      onMouseMove={(e) => {
+        if (drag) return;
+        const h = hitTest(local(e), mode === "addtext");
+        if (h?.page !== hover?.page || h?.index !== hover?.index) setHover(h);
+      }}
       onMouseLeave={() => setHover(null)}
       onDoubleClick={(e) => {
         const hit = hitTest(local(e));
@@ -343,7 +451,13 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
               />
             ))}
           </div>
-          <div className="obj-toolbar" style={{ left: selBox.left, top: Math.max(0, selBox.top - 38) }} onMouseDown={(e) => e.stopPropagation()}>
+          <div
+            ref={toolbarRef}
+            className={`obj-toolbar ${popUp(selBox) ? "pop-up" : ""}`}
+            style={toolbarPos(selBox)}
+            onMouseDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
             <span className="obj-kind">{kindLabel(selected)}</span>
             {selected.kind === "text" && (
               <>
@@ -362,7 +476,7 @@ export function ObjectLayer({ mode, geom, docKey, layout, textStyle, objectsFor,
                     }
                   }}
                 />
-                <ColorInput value={selected.color ?? "#000000"} title={t("obj.color")} onCommit={(color) => applyStyle({ color })} />
+                <ColorMenu value={selected.color ?? "#000000"} onPick={(color) => applyStyle({ color })} />
               </>
             )}
             <button

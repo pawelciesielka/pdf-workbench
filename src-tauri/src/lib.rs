@@ -295,8 +295,48 @@ async fn signing_certs() -> Res<Vec<signing::SigningCert>> {
 async fn sign_pdf(request: Request<'_>) -> Res<Response> {
     let bytes = raw_body(&request)?;
     let o: signing::SignOptions = meta(&request)?;
-    let out = tokio::task::spawn_blocking(move || signing::sign_pdf(&bytes, &o)).await.map_err(err)??;
-    Ok(Response::new(out))
+    let (out, report) = tokio::task::spawn_blocking(move || signing::sign_pdf(&bytes, &o)).await.map_err(err)??;
+    Ok(Response::new(signing::pack(out, &report)))
+}
+
+/// Zaufanie do podpisów w pliku: łańcuch, unieważnienie, unijna lista zaufanych (pobierana i
+/// przechowywana w danych aplikacji), zaufany czas.
+#[tauri::command]
+async fn signature_trust(app: tauri::AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Res<Vec<signing::TrustInfo>> {
+    let bytes = raw_body(&request)?;
+    let probe = bytes.clone();
+    let countries = tokio::task::spawn_blocking(move || signing::issuer_countries(&probe)).await.map_err(err)?;
+    let dir = app.path().app_data_dir().map_err(err)?.join("tsl");
+    let mut lists = HashMap::new();
+    let mut errors = Vec::new();
+    for cc in countries {
+        match signing::trust::tl_services(&state.http, &dir, &cc).await {
+            Ok(s) => {
+                lists.insert(cc, s);
+            }
+            Err(e) => errors.push(format!("Nie udało się sprawdzić unijnej listy zaufanych ({cc}): {e}.")),
+        }
+    }
+    tokio::task::spawn_blocking(move || signing::check_trust(&bytes, &lists, &errors)).await.map_err(err)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BatchProgress {
+    index: usize,
+    item: signing::BatchItem,
+}
+
+/// Podpisanie wielu plików jednym certyfikatem; postęp na kanale po każdym pliku.
+#[tauri::command]
+async fn sign_files(options: signing::BatchOptions, on_progress: Channel<BatchProgress>) -> Res<Vec<signing::BatchItem>> {
+    tokio::task::spawn_blocking(move || {
+        signing::sign_files(&options, |index, item| {
+            let _ = on_progress.send(BatchProgress { index, item: item.clone() });
+        })
+    })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command]
@@ -641,6 +681,8 @@ pub fn run() {
             pdf_signatures,
             signing_certs,
             sign_pdf,
+            signature_trust,
+            sign_files,
             ocr_image,
             save_page_texts,
             list_recent,

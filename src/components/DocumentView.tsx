@@ -1,7 +1,7 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { t } from "../i18n";
-import { api, errorText, type CitationView, type DocumentInfo, type EditOp, type EditReport, type Selection, type SignatureInfo, type ToolCall, type ToolOutcome } from "../lib/api";
+import { api, errorText, type CitationView, type DocumentInfo, type EditOp, type EditReport, type Selection, type Placement, type SignatureInfo, type ToolCall, type TrustInfo, type ToolOutcome } from "../lib/api";
 import {
   applyMarks,
   compareTexts,
@@ -23,7 +23,7 @@ import { ChatPanel, type ChatPanelHandle } from "./ChatPanel";
 import { changesForChat, CompareView } from "./CompareView";
 import { HIGHLIGHT_COLORS, PdfViewer, type EditorMode, type PdfViewerHandle, type SelectionInfo } from "./PdfViewer";
 import type { TextStyle } from "./ObjectLayer";
-import { pdfDate, SignaturesDialog, SignDialog, signersSummary, stampDate, UnlockDialog, type SignChoice } from "./Signing";
+import { LAST_PAGE, pdfDate, SignaturesDialog, SignDialog, signersSummary, UnlockDialog, visibleLines, type SignChoice } from "./Signing";
 import { Thumbnails } from "./Thumbnails";
 
 export interface DocumentViewHandle {
@@ -50,6 +50,9 @@ interface Props {
   onOpenNew(info: DocumentInfo): void;
   onDirtyChange(dirty: boolean): void;
   onToast(message: string, kind?: "error" | "info"): void;
+  onBatchSign(): void;
+  /** Podpisywanie wielu plików: wskaż miejsce podpisu w tym Dokumencie. */
+  placeRequest?: { index: number; total: number; onPlace(p: Placement | null, sameForRest: boolean): void; onCancel(): void };
 }
 
 type PromptState = { kind: "correct"; marks: Mark[]; value: string; original: string; page: number; font: "serif" | "sans" } | { kind: "findRedact"; value: string } | null;
@@ -115,11 +118,16 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const [docVersion, setDocVersion] = useState(0);
   const [textStyle, setTextStyle] = useState<TextStyle>({ fontSize: 12, color: "#000000", bold: false });
   const [signatures, setSignatures] = useState<SignatureInfo[]>([]);
+  /** Zaufanie do podpisów (łańcuch, unieważnienie, lista UE) — sprawdzane w tle po wczytaniu. */
+  const [trust, setTrust] = useState<TrustInfo[] | null>(null);
+  const [trustError, setTrustError] = useState<string | null>(null);
   /** „Twarde” odblokowanie edycji podpisanego dokumentu (do zamknięcia/przeładowania pliku). */
   const [unlocked, setUnlocked] = useState(false);
   const [dialog, setDialog] = useState<"sign" | "signatures" | "unlock" | null>(null);
   /** Wybór z okna podpisu czekający na wskazanie miejsca widocznego podpisu. */
   const pendingSign = useRef<SignChoice | null>(null);
+  const [sameForRest, setSameForRest] = useState(false);
+  const placeRequest = props.placeRequest;
   /** Bajty aktualnie wyświetlanego stanu (bez niezapisanych Adnotacji) — do listy obiektów. */
   const currentBytes = useRef<Uint8Array | null>(null);
   const viewerRef = useRef<PdfViewerHandle>(null);
@@ -169,6 +177,8 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     setMarks([]);
     setCompare(null);
     setSignatures([]);
+    setTrust(null);
+    setTrustError(null);
     setUnlocked(false);
     (async () => {
       try {
@@ -177,7 +187,15 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         diskBytes.current = data;
         api
           .signatures(data)
-          .then((sigs) => !cancelled && setSignatures(sigs))
+          .then((sigs) => {
+            if (cancelled) return;
+            setSignatures(sigs);
+            if (sigs.some((x) => x.intact))
+              api
+                .signatureTrust(data)
+                .then((tr) => !cancelled && setTrust(tr))
+                .catch((e) => !cancelled && setTrustError(errorText(e)));
+          })
           .catch(() => {});
         const { texts } = await loadBytes(data, firstPage.current);
         if (!info.indexed && !cancelled) {
@@ -214,6 +232,11 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
       /* brak dostępu do localStorage */
     }
   }, [showChat]);
+
+  // Podpisywanie wielu plików: od razu tryb wskazywania miejsca podpisu.
+  useEffect(() => {
+    if (placeRequest && active && doc) setEditorMode("signbox");
+  }, [placeRequest?.index, active, doc]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Podpisany dokument: z narzędzi edycji zostaje tylko zaznaczanie.
   useEffect(() => {
@@ -406,22 +429,24 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     try {
       const source = dirty || !diskBytes.current ? await d.saveDocument() : diskBytes.current;
       const now = new Date();
-      const lines = [t("sign.visibleBy"), choice.cert.name, t("sign.visibleDate", { date: stampDate(now) })];
-      if (choice.reason) lines.push(t("sign.visibleReason", { reason: choice.reason }));
-      const signed = await api.signPdf(source, {
+      const lines = visibleLines(choice.cert, choice.reason, now);
+      const { data: signed, report } = await api.signPdf(source, {
         certId: choice.cert.id,
         signingTime: pdfDate(now),
         reason: choice.reason || undefined,
         location: choice.location || undefined,
         timestamp: choice.timestamp,
+        ltv: choice.ltv,
         visible: place ? { page: place.page, rect: place.rect, lines } : undefined,
       });
+      const level = t("sign.level", { level: report.level === "B-LTA" ? "PAdES-LTA" : `PAdES-${report.level}` });
       const res = await api.saveDocument(signed, { path: target, parentHash: info.hash, backup: false });
-      if (res.document.path.toLowerCase() === info.path.toLowerCase()) props.onSaved(res.document, t("sign.done"));
+      if (res.document.path.toLowerCase() === info.path.toLowerCase()) props.onSaved(res.document, `${t("sign.done")} ${level}`);
       else {
         props.onOpenNew(res.document);
-        props.onToast(t("sign.doneNew", { name: res.document.name }), "info");
+        props.onToast(`${t("sign.doneNew", { name: res.document.name })} ${level}`, "info");
       }
+      if (report.warning) props.onToast(report.warning, "error");
     } catch (e) {
       props.onToast(errorText(e));
     } finally {
@@ -438,6 +463,12 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   };
 
   const placeSignature = (p: number, rect: Rect) => {
+    if (placeRequest) {
+      setEditorMode("none");
+      const last = p === docRef.current?.numPages;
+      placeRequest.onPlace({ page: last ? LAST_PAGE : p, rect }, sameForRest);
+      return;
+    }
     const choice = pendingSign.current;
     pendingSign.current = null;
     setEditorMode("none");
@@ -520,6 +551,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     runTool,
     isDirty: () => dirty,
     escape() {
+      if (placeRequest) placeRequest.onCancel();
       pendingSign.current = null;
       setEditorMode("none");
       setMenuOpen(false);
@@ -727,6 +759,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
               <button onClick={() => (setMenuOpen(false), save(true))}>{t("edit.saveAs")}</button>
               <hr />
               <button onClick={() => (setMenuOpen(false), setDialog("sign"))}>✍ {t("sign.menu")}</button>
+              <button onClick={() => (setMenuOpen(false), props.onBatchSign())}>✍ {t("sign.batchMenu")}</button>
               <button disabled={!signatures.length} onClick={() => (setMenuOpen(false), setDialog("signatures"))}>
                 {t("sign.menuList")}
               </button>
@@ -776,9 +809,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         <div className={`info-bar sign-bar ${locked ? "locked" : intactSigs.length ? "unlocked" : "broken"}`}>
           <span>
             {locked
-              ? `🔒 ${t("sign.lockedBanner", { who: signersSummary(signatures) })}`
+              ? `🔒 ${t("sign.lockedBanner", { who: signersSummary(signatures, trust) })}`
               : intactSigs.length
-                ? `⚠ ${t("sign.unlockedBanner", { who: signersSummary(signatures) })}`
+                ? `⚠ ${t("sign.unlockedBanner", { who: signersSummary(signatures, trust) })}`
                 : `⚠ ${t("sign.brokenBanner")}`}
           </span>
           <button className="link-btn" onClick={() => setDialog("signatures")}>
@@ -788,7 +821,20 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
           {!locked && intactSigs.length > 0 && !dirty && <button onClick={() => setUnlocked(false)}>🔒 {t("sign.relock")}</button>}
         </div>
       )}
-      {editorMode === "signbox" && (
+      {placeRequest && (
+        <div className="info-bar redact-bar batch-place-bar">
+          <span>✍ {t("sign.batchPlaceBar", { i: placeRequest.index + 1, n: placeRequest.total })}</span>
+          {placeRequest.total - placeRequest.index > 1 && (
+            <label className="check">
+              <input type="checkbox" checked={sameForRest} onChange={(e) => setSameForRest(e.target.checked)} />{" "}
+              {t("sign.sameForRest", { n: placeRequest.total - placeRequest.index - 1 })}
+            </label>
+          )}
+          <button onClick={() => placeRequest.onPlace(null, sameForRest)}>{t("sign.defaultPlace")}</button>
+          <button onClick={placeRequest.onCancel}>{t("common.cancel")}</button>
+        </div>
+      )}
+      {editorMode === "signbox" && !placeRequest && (
         <div className="info-bar redact-bar">
           ✍ {t("sign.placeHint")}
           <button
@@ -922,7 +968,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
             </div>
           )}
           {dialog === "sign" && <SignDialog onCancel={() => setDialog(null)} onSubmit={submitSign} />}
-          {dialog === "signatures" && <SignaturesDialog signatures={signatures} onClose={() => setDialog(null)} />}
+          {dialog === "signatures" && <SignaturesDialog signatures={signatures} trust={trust} trustError={trustError} onClose={() => setDialog(null)} />}
           {dialog === "unlock" && (
             <UnlockDialog
               count={intactSigs.length}

@@ -5,6 +5,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DocumentView, type DocumentViewHandle } from "./components/DocumentView";
 import { SettingsDialog, type Theme } from "./components/SettingsDialog";
+import { BatchSign } from "./components/Signing";
+import type { Placement } from "./lib/api";
 import { StartScreen } from "./components/StartScreen";
 import { WorkspaceDialog, WorkspaceView } from "./components/Workspaces";
 import { t } from "./i18n";
@@ -32,6 +34,16 @@ export default function App() {
   const [wsDialog, setWsDialog] = useState<{ editing: WorkspaceInfo | null } | null>(null);
   const [theme, setTheme] = useState<Theme>(loadTheme);
   const [dragging, setDragging] = useState(false);
+  /** Pliki wybrane do podpisania naraz. */
+  const [batchFiles, setBatchFiles] = useState<string[] | null>(null);
+  /** Wskazywanie miejsc podpisu w kolejnych plikach (otwieranych w kartach edytora). */
+  const [placeSession, setPlaceSession] = useState<{
+    files: string[];
+    index: number;
+    placements: (Placement | null)[];
+    tabId: string;
+    resolve(p: (Placement | null)[] | null): void;
+  } | null>(null);
   const [toast, setToast] = useState<{ text: string; kind: "error" | "info" } | null>(null);
   const views = useRef(new Map<string, DocumentViewHandle>());
   const tabsRef = useRef(tabs);
@@ -40,7 +52,7 @@ export default function App() {
   dirtyRef.current = dirty;
   if (import.meta.env.DEV) {
     // Uchwyt do testów w trybie deweloperskim (WebView2 + CDP).
-    (window as unknown as { __pdfwb: unknown }).__pdfwb = { views: views.current, tabs: tabsRef, open: (p: string) => openPathsRef.current?.([p]) };
+    (window as unknown as { __pdfwb: unknown }).__pdfwb = { views: views.current, tabs: tabsRef, open: (p: string) => openPathsRef.current?.([p]), batch: (files: string[]) => setBatchFiles(files) };
   }
   const openPathsRef = useRef<((paths: string[]) => Promise<string | undefined>) | null>(null);
 
@@ -262,6 +274,48 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [activeId, tabs, pickFiles, closeTab]);
 
+  /** Otwiera plik `index` w karcie; pliki, których nie da się otworzyć, dostają domyślne miejsce. */
+  const placeNext = async (files: string[], index: number, placements: (Placement | null)[], resolve: (p: (Placement | null)[] | null) => void) => {
+    let i = index;
+    const acc = [...placements];
+    while (i < files.length) {
+      const tabId = await openPaths([files[i]]);
+      if (tabId) {
+        setPlaceSession({ files, index: i, placements: acc, tabId, resolve });
+        return;
+      }
+      acc.push(null);
+      i++;
+    }
+    setPlaceSession(null);
+    resolve(acc);
+  };
+
+  const placeInEditor = (files: string[]) =>
+    new Promise<(Placement | null)[] | null>((resolve) => void placeNext(files, 0, [], resolve));
+
+  const onPlaced = (p: Placement | null, sameForRest: boolean) => {
+    const s = placeSession;
+    if (!s) return;
+    const placements = [...s.placements, p];
+    if (sameForRest) while (placements.length < s.files.length) placements.push(p);
+    if (placements.length >= s.files.length) {
+      setPlaceSession(null);
+      s.resolve(placements);
+    } else void placeNext(s.files, placements.length, placements, s.resolve);
+  };
+
+  const cancelPlacing = () => {
+    placeSession?.resolve(null);
+    setPlaceSession(null);
+  };
+
+  const startBatchSign = async () => {
+    const picked = await openDialog({ multiple: true, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+    const files = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (files.length) setBatchFiles(files);
+  };
+
   const cycleTheme = () => setTheme((th) => (th === "system" ? "dark" : th === "dark" ? "light" : "system"));
   const docTabs = tabs.filter((x): x is Extract<Tab, { kind: "document" }> => x.kind === "document");
   const hasKey = !!settings?.apiKeySource;
@@ -298,6 +352,9 @@ export default function App() {
             ＋
           </button>
         </div>
+        <button className="icon-btn" title={t("sign.batchMenu")} onClick={startBatchSign}>
+          ✍
+        </button>
         <button className="icon-btn" title={t("ws.title")} onClick={() => setWsDialog({ editing: null })}>
           🗂
         </button>
@@ -330,6 +387,12 @@ export default function App() {
               onOpenNew={addDocTab}
               onDirtyChange={(d) => setDirty((cur) => (cur[tab.id] === d ? cur : { ...cur, [tab.id]: d }))}
               onToast={showToast}
+              onBatchSign={startBatchSign}
+              placeRequest={
+                placeSession?.tabId === tab.id
+                  ? { index: placeSession.index, total: placeSession.files.length, onPlace: onPlaced, onCancel: cancelPlacing }
+                  : undefined
+              }
             />
           ) : (
             <WorkspaceView
@@ -357,6 +420,7 @@ export default function App() {
       {showSettings && settings && (
         <SettingsDialog settings={settings} theme={theme} onTheme={setTheme} onChanged={refreshSettings} onClose={() => setShowSettings(false)} />
       )}
+      {batchFiles && <BatchSign files={batchFiles} onClose={() => setBatchFiles(null)} onOpen={(p) => openPaths([p])} placeInEditor={placeInEditor} />}
       {wsDialog && <WorkspaceDialog openDocs={docTabs.map((d) => d.info)} editing={wsDialog.editing} onOpen={openWorkspace} onClose={() => setWsDialog(null)} />}
     </div>
   );
