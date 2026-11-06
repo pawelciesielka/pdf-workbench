@@ -143,6 +143,42 @@ export interface EditReport {
   fontFallbacks: string[];
 }
 
+/** Podpis elektroniczny znaleziony w pliku. */
+export interface SignatureInfo {
+  kind: "signature" | "timestamp";
+  signer: string | null;
+  issuer: string | null;
+  /** Data z pliku w formacie PDF („D:20261106143205+01'00'”). */
+  time: string | null;
+  reason: string | null;
+  /** Podpis zgadza się z podpisanymi bajtami. */
+  intact: boolean;
+  /** Po podpisie nic nie dopisano do pliku. */
+  coversWhole: boolean;
+  timestamped: boolean;
+  qualified: boolean;
+  problem: string | null;
+}
+
+/** Certyfikat z kluczem prywatnym w magazynie Windows (np. z SimplySign Desktop). */
+export interface SigningCert {
+  id: string;
+  name: string;
+  issuer: string;
+  validFrom: number;
+  validTo: number;
+  qualified: boolean;
+}
+
+export interface SignOptions {
+  certId: string;
+  signingTime: string;
+  reason?: string;
+  location?: string;
+  timestamp: boolean;
+  visible?: { page: number; rect: [number, number, number, number]; lines: string[] };
+}
+
 /** Odpowiedź [u32 LE długość JSON][JSON][PDF]. */
 function unpackEdit(buf: ArrayBuffer): { data: Uint8Array; report: EditReport } {
   const all = new Uint8Array(buf);
@@ -163,6 +199,9 @@ export const api = {
   readDocument: (path: string) => invoke<ArrayBuffer>("read_document", { path }),
   saveDocument: (data: Uint8Array, meta: { path: string; parentHash: string | null; backup: boolean }) =>
     rawInvoke<{ document: DocumentInfo; backupPath: string | null }>("save_document", data, meta),
+  signatures: (data: Uint8Array) => rawInvoke<SignatureInfo[]>("pdf_signatures", data, null),
+  signingCerts: () => invoke<SigningCert[]>("signing_certs"),
+  signPdf: (data: Uint8Array, o: SignOptions) => rawInvoke<ArrayBuffer>("sign_pdf", data, o).then(bytes),
   rotatePages: (data: Uint8Array, pages: number[], degrees: number) => rawInvoke<ArrayBuffer>("rotate_pages", data, { pages, degrees }).then(bytes),
   rasterizePages: (body: Uint8Array, meta: { pdfLen: number; items: { page: number; offset: number; len: number; width: number; height: number }[] }) =>
     rawInvoke<ArrayBuffer>("rasterize_pages", body, meta).then(bytes),

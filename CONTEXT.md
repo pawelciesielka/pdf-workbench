@@ -60,6 +60,24 @@ _Unikaj_: diff, różnice
 Edycja zaproponowana przez AI w Rozmowie, która czeka na „Zastosuj” użytkownika (usunięcie lub przestawienie stron, Redakcja, zamiana tekstu).
 _Unikaj_: sugestia, akcja AI
 
+### Podpisy
+
+**Podpis elektroniczny**:
+Podpis PAdES złożony certyfikatem użytkownika (np. kwalifikowanym z SimplySign) i dopisany do Dokumentu tak, że wcześniejsze podpisy pozostają ważne. Może być widoczny na stronie albo niewidoczny.
+_Unikaj_: sygnatura, podpis cyfrowy, parafka
+
+**Podpisany dokument**:
+Dokument z co najmniej jednym nienaruszonym Podpisem elektronicznym. Edycja jest w nim zablokowana, bo każda zapisana zmiana unieważniłaby podpis; można go tylko przeglądać, rozmawiać o nim i dopisywać kolejne podpisy.
+_Unikaj_: dokument zablokowany, plik tylko do odczytu
+
+**Odblokowanie edycji**:
+Świadoma decyzja użytkownika, że chce edytować Podpisany dokument mimo utraty ważności podpisu. Obowiązuje do zamknięcia lub ponownego wczytania Dokumentu.
+_Unikaj_: tryb serwisowy, wymuszenie
+
+**Naruszony podpis**:
+Podpis elektroniczny, który nie zgadza się już z treścią Dokumentu, bo plik zmieniono po podpisaniu. Nie blokuje edycji.
+_Unikaj_: zły podpis, podpis wygasły
+
 ### Rozmowy
 
 **Rozmowa**:

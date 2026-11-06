@@ -11,12 +11,12 @@ type Bus = InstanceType<Mod["EventBus"]>;
 // Menedżer edytorów adnotacji pdf.js (typ wewnętrzny biblioteki).
 type UiManager = { undo(): void; redo(): void; highlightSelection(method?: string): void };
 
-export type EditorMode = "none" | "highlight" | "freetext" | "ink" | "stamp" | "redact" | "objects" | "addtext";
+export type EditorMode = "none" | "highlight" | "freetext" | "ink" | "stamp" | "redact" | "objects" | "addtext" | "signbox";
 
 /** Tryby obsługiwane przez naszą nakładkę (pdf.js w trybie bez edytora). */
-const OVERLAY_MODES = new Set<EditorMode>(["redact", "objects", "addtext"]);
+const OVERLAY_MODES = new Set<EditorMode>(["redact", "objects", "addtext", "signbox"]);
 
-const EDITOR_TYPES: Record<Exclude<EditorMode, "redact" | "objects" | "addtext">, number> = {
+const EDITOR_TYPES: Record<Exclude<EditorMode, "redact" | "objects" | "addtext" | "signbox">, number> = {
   none: pdfjsLib.AnnotationEditorType.NONE,
   highlight: pdfjsLib.AnnotationEditorType.HIGHLIGHT,
   freetext: pdfjsLib.AnnotationEditorType.FREETEXT,
@@ -72,6 +72,8 @@ interface Props {
   textStyle: TextStyle;
   objectsFor(page: number): Promise<PageObject[]>;
   onObjectOps(ops: EditOp[]): Promise<void>;
+  /** Tryb „signbox”: narysowany prostokąt miejsca na widoczny podpis (punkty PDF). */
+  onSignBox?(page: number, rect: Mark["rect"]): void;
 }
 
 const MIN_SCALE = 0.25;
@@ -295,7 +297,7 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
 
   // Rysowanie prostokątów Redakcji.
   const onLayerDown = (e: React.MouseEvent) => {
-    if (props.editorMode !== "redact") return;
+    if (props.editorMode !== "redact" && props.editorMode !== "signbox") return;
     const hit = pageAt(e.clientX, e.clientY);
     if (!hit) return;
     e.preventDefault();
@@ -318,7 +320,8 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         clamp(draft.x1, r.left, r.right),
         clamp(draft.y1, r.top, r.bottom),
       );
-      if (rect) cb.current.onAddMark({ id: newMarkId(), page: draft.page, rect, kind: "redact" });
+      if (rect && cb.current.editorMode === "signbox") cb.current.onSignBox?.(draft.page, rect);
+      else if (rect) cb.current.onAddMark({ id: newMarkId(), page: draft.page, rect, kind: "redact" });
     }
     setDraft(null);
   };

@@ -1,7 +1,7 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { t } from "../i18n";
-import { api, errorText, type CitationView, type DocumentInfo, type EditOp, type EditReport, type Selection, type ToolCall, type ToolOutcome } from "../lib/api";
+import { api, errorText, type CitationView, type DocumentInfo, type EditOp, type EditReport, type Selection, type SignatureInfo, type ToolCall, type ToolOutcome } from "../lib/api";
 import {
   applyMarks,
   compareTexts,
@@ -23,6 +23,7 @@ import { ChatPanel, type ChatPanelHandle } from "./ChatPanel";
 import { changesForChat, CompareView } from "./CompareView";
 import { HIGHLIGHT_COLORS, PdfViewer, type EditorMode, type PdfViewerHandle, type SelectionInfo } from "./PdfViewer";
 import type { TextStyle } from "./ObjectLayer";
+import { pdfDate, SignaturesDialog, SignDialog, signersSummary, stampDate, UnlockDialog, type SignChoice } from "./Signing";
 import { Thumbnails } from "./Thumbnails";
 
 export interface DocumentViewHandle {
@@ -113,6 +114,12 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const [, setStackVersion] = useState(0);
   const [docVersion, setDocVersion] = useState(0);
   const [textStyle, setTextStyle] = useState<TextStyle>({ fontSize: 12, color: "#000000", bold: false });
+  const [signatures, setSignatures] = useState<SignatureInfo[]>([]);
+  /** „Twarde” odblokowanie edycji podpisanego dokumentu (do zamknięcia/przeładowania pliku). */
+  const [unlocked, setUnlocked] = useState(false);
+  const [dialog, setDialog] = useState<"sign" | "signatures" | "unlock" | null>(null);
+  /** Wybór z okna podpisu czekający na wskazanie miejsca widocznego podpisu. */
+  const pendingSign = useRef<SignChoice | null>(null);
   /** Bajty aktualnie wyświetlanego stanu (bez niezapisanych Adnotacji) — do listy obiektów. */
   const currentBytes = useRef<Uint8Array | null>(null);
   const viewerRef = useRef<PdfViewerHandle>(null);
@@ -127,6 +134,10 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   propsRef.current = props;
 
   const dirty = edited || annotDirty;
+  const intactSigs = signatures.filter((x) => x.intact);
+  const locked = intactSigs.length > 0 && !unlocked;
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
   useEffect(() => props.onDirtyChange(dirty), [dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Ładuje bajty jako bieżący stan Dokumentu (kopia bajtów — pdf.js przenosi bufor do workera). */
@@ -157,11 +168,17 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     setHasRedaction(false);
     setMarks([]);
     setCompare(null);
+    setSignatures([]);
+    setUnlocked(false);
     (async () => {
       try {
         const data = new Uint8Array(await api.readDocument(info.path));
         if (cancelled) return;
         diskBytes.current = data;
+        api
+          .signatures(data)
+          .then((sigs) => !cancelled && setSignatures(sigs))
+          .catch(() => {});
         const { texts } = await loadBytes(data, firstPage.current);
         if (!info.indexed && !cancelled) {
           await api.savePageTexts(info.hash, texts);
@@ -198,11 +215,17 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     }
   }, [showChat]);
 
+  // Podpisany dokument: z narzędzi edycji zostaje tylko zaznaczanie.
+  useEffect(() => {
+    if (locked) setEditorMode((m) => (m === "none" || m === "signbox" ? m : "none"));
+  }, [locked]);
+
   /** Edycja strukturalna: zapamiętuje stan do cofnięcia, wykonuje operację i ładuje wynik. */
   const applyEdit = useCallback(
     async (label: string, fn: (doc: PDFDocumentProxy, bytes: Uint8Array) => Promise<Uint8Array>): Promise<void> => {
       const d = docRef.current;
       if (!d) throw new Error(t("loading"));
+      if (lockedRef.current) throw new Error(t("sign.lockedError"));
       // Krótkie operacje bez migania nakładki „Proszę czekać”.
       setBusy("");
       const timer = window.setTimeout(() => setBusy(label), 600);
@@ -279,6 +302,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     const d = docRef.current;
     if (!d || busy) return;
     if (marks.length && !window.confirm(t("edit.unappliedMarks", { n: marks.length }))) return;
+    if (dirty && intactSigs.length && !window.confirm(t("sign.saveConfirm"))) return;
     let path = info.path;
     if (asNew) {
       const picked = await saveDialog({ defaultPath: info.path.replace(/\.pdf$/i, " (kopia).pdf"), filters: [{ name: "PDF", extensions: ["pdf"] }] });
@@ -287,7 +311,8 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     }
     setBusy(t("edit.saving"));
     try {
-      const bytes = await d.saveDocument();
+      // Bez zmian zapisujemy dokładnie bajty z dysku (pdf.js mógłby dopisać aktualizację i naruszyć podpis).
+      const bytes = dirty || !diskBytes.current ? await d.saveDocument() : diskBytes.current;
       const res = await api.saveDocument(bytes, { path, parentHash: info.hash, backup: !asNew && !hasRedaction });
       const msg = res.backupPath ? t("edit.backupCreated", { name: res.backupPath.split("\\").pop() ?? "" }) : t("edit.saved");
       props.onSaved(res.document, msg);
@@ -367,8 +392,65 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     }
   };
 
+  /** Podpis: wybór pliku docelowego, podpis certyfikatem z Windows i zapis. */
+  const signDocument = async (choice: SignChoice, place?: { page: number; rect: Rect }) => {
+    const d = docRef.current;
+    if (!d) return;
+    const target = await saveDialog({
+      title: t("sign.saveTitle"),
+      defaultPath: info.path.replace(/\.pdf$/i, " (podpisany).pdf"),
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+    if (!target) return;
+    setBusy(t("sign.signing"));
+    try {
+      const source = dirty || !diskBytes.current ? await d.saveDocument() : diskBytes.current;
+      const now = new Date();
+      const lines = [t("sign.visibleBy"), choice.cert.name, t("sign.visibleDate", { date: stampDate(now) })];
+      if (choice.reason) lines.push(t("sign.visibleReason", { reason: choice.reason }));
+      const signed = await api.signPdf(source, {
+        certId: choice.cert.id,
+        signingTime: pdfDate(now),
+        reason: choice.reason || undefined,
+        location: choice.location || undefined,
+        timestamp: choice.timestamp,
+        visible: place ? { page: place.page, rect: place.rect, lines } : undefined,
+      });
+      const res = await api.saveDocument(signed, { path: target, parentHash: info.hash, backup: false });
+      if (res.document.path.toLowerCase() === info.path.toLowerCase()) props.onSaved(res.document, t("sign.done"));
+      else {
+        props.onOpenNew(res.document);
+        props.onToast(t("sign.doneNew", { name: res.document.name }), "info");
+      }
+    } catch (e) {
+      props.onToast(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const submitSign = (choice: SignChoice) => {
+    setDialog(null);
+    if (choice.visible) {
+      pendingSign.current = choice;
+      setEditorMode("signbox");
+    } else void signDocument(choice);
+  };
+
+  const placeSignature = (p: number, rect: Rect) => {
+    const choice = pendingSign.current;
+    pendingSign.current = null;
+    setEditorMode("none");
+    if (choice) void signDocument(choice, { page: p, rect });
+  };
+
   const runTool = async (call: ToolCall): Promise<ToolOutcome> => {
     const i = call.input as Record<string, unknown>;
+    if (lockedRef.current && call.name !== "go_to_page")
+      return {
+        ok: false,
+        text: "Dokument jest podpisany elektronicznie, więc edycja jest zablokowana (każda zmiana unieważniłaby podpis). Użytkownik może ją odblokować przyciskiem „Odblokuj edycję” na pasku nad dokumentem.",
+      };
     const pages = (i.pages as number[]) ?? [];
     const unsaved = t("tool.unsaved");
     switch (call.name) {
@@ -438,6 +520,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     runTool,
     isDirty: () => dirty,
     escape() {
+      pendingSign.current = null;
       setEditorMode("none");
       setMenuOpen(false);
       setPrompt(null);
@@ -579,9 +662,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
             <button
               key={m.mode}
               className={`icon-btn ${editorMode === m.mode ? "on" : ""}`}
-              title={t(m.label as "edit.select")}
+              title={locked && m.mode !== "none" ? t("sign.lockedHint") : t(m.label as "edit.select")}
               onClick={() => setEditorMode(m.mode)}
-              disabled={!doc || !!busy}
+              disabled={!doc || !!busy || (locked && m.mode !== "none")}
             >
               {m.icon}
             </button>
@@ -632,6 +715,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         <button className={`save-btn ${dirty ? "dirty" : ""}`} title={t("edit.saveHint")} disabled={!!busy || !doc} onClick={() => save(false)}>
           💾 {t("edit.save")}
         </button>
+        <button className="icon-btn" title={t("sign.button")} disabled={!!busy || !doc} onClick={() => setDialog("sign")}>
+          ✍
+        </button>
         <div className="menu-wrap">
           <button className="icon-btn" title={t("edit.more")} onClick={() => setMenuOpen((v) => !v)}>
             ⋯
@@ -640,13 +726,18 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
             <div className="menu" onMouseLeave={() => setMenuOpen(false)}>
               <button onClick={() => (setMenuOpen(false), save(true))}>{t("edit.saveAs")}</button>
               <hr />
-              <button disabled={!scanned.length} onClick={() => (setMenuOpen(false), runOcr(scanned))}>
+              <button onClick={() => (setMenuOpen(false), setDialog("sign"))}>✍ {t("sign.menu")}</button>
+              <button disabled={!signatures.length} onClick={() => (setMenuOpen(false), setDialog("signatures"))}>
+                {t("sign.menuList")}
+              </button>
+              <hr />
+              <button disabled={!scanned.length || locked} onClick={() => (setMenuOpen(false), runOcr(scanned))}>
                 {t("ocr.scanned", { n: scanned.length })}
               </button>
-              <button onClick={() => (setMenuOpen(false), runOcr([page]))}>{t("ocr.current", { page })}</button>
+              <button disabled={locked} onClick={() => (setMenuOpen(false), runOcr([page]))}>{t("ocr.current", { page })}</button>
               <hr />
-              <button onClick={() => (setMenuOpen(false), setPrompt({ kind: "findRedact", value: "" }))}>{t("edit.findRedact")}</button>
-              <button onClick={() => (setMenuOpen(false), insertFile(page))}>{t("pages.insertAfterCurrent", { page })}</button>
+              <button disabled={locked} onClick={() => (setMenuOpen(false), setPrompt({ kind: "findRedact", value: "" }))}>{t("edit.findRedact")}</button>
+              <button disabled={locked} onClick={() => (setMenuOpen(false), insertFile(page))}>{t("pages.insertAfterCurrent", { page })}</button>
               <button onClick={startCompare}>{t("compare.start")}</button>
             </div>
           )}
@@ -681,7 +772,36 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         </button>
       </div>
 
-      {scanned.length > 0 && editorMode === "none" && (
+      {signatures.length > 0 && (
+        <div className={`info-bar sign-bar ${locked ? "locked" : intactSigs.length ? "unlocked" : "broken"}`}>
+          <span>
+            {locked
+              ? `🔒 ${t("sign.lockedBanner", { who: signersSummary(signatures) })}`
+              : intactSigs.length
+                ? `⚠ ${t("sign.unlockedBanner", { who: signersSummary(signatures) })}`
+                : `⚠ ${t("sign.brokenBanner")}`}
+          </span>
+          <button className="link-btn" onClick={() => setDialog("signatures")}>
+            {t("sign.details")}
+          </button>
+          {locked && <button onClick={() => setDialog("unlock")}>🔓 {t("sign.unlock")}</button>}
+          {!locked && intactSigs.length > 0 && !dirty && <button onClick={() => setUnlocked(false)}>🔒 {t("sign.relock")}</button>}
+        </div>
+      )}
+      {editorMode === "signbox" && (
+        <div className="info-bar redact-bar">
+          ✍ {t("sign.placeHint")}
+          <button
+            onClick={() => {
+              pendingSign.current = null;
+              setEditorMode("none");
+            }}
+          >
+            {t("common.cancel")}
+          </button>
+        </div>
+      )}
+      {scanned.length > 0 && editorMode === "none" && !locked && (
         <div className="info-bar">
           {t("ocr.banner", { n: scanned.length, total })}
           <button className="link-btn" disabled={!!busy} onClick={() => runOcr(scanned)}>
@@ -714,6 +834,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
             current={page}
             selected={selectedPages}
             busy={!!busy}
+            locked={locked}
             onSelect={(pages, goTo) => {
               setSelectedPages(pages);
               if (goTo) viewerRef.current?.goToPage(goTo);
@@ -747,6 +868,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
               textStyle={textStyle}
               objectsFor={objectsFor}
               onObjectOps={objectOps}
+              onSignBox={placeSignature}
             />
           )}
           {floatingSel && (
@@ -754,8 +876,8 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
               <button className="primary" onClick={askAboutSelection}>
                 ✨ {t("selection.ask")}
               </button>
-              <button onClick={correctSelection}>✏ {t("selection.correct")}</button>
-              <button onClick={redactSelection}>■ {t("selection.redact")}</button>
+              {!locked && <button onClick={correctSelection}>✏ {t("selection.correct")}</button>}
+              {!locked && <button onClick={redactSelection}>■ {t("selection.redact")}</button>}
             </div>
           )}
           {busy && (
@@ -798,6 +920,18 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
                 </div>
               </div>
             </div>
+          )}
+          {dialog === "sign" && <SignDialog onCancel={() => setDialog(null)} onSubmit={submitSign} />}
+          {dialog === "signatures" && <SignaturesDialog signatures={signatures} onClose={() => setDialog(null)} />}
+          {dialog === "unlock" && (
+            <UnlockDialog
+              count={intactSigs.length}
+              onCancel={() => setDialog(null)}
+              onConfirm={() => {
+                setUnlocked(true);
+                setDialog(null);
+              }}
+            />
           )}
         </div>
         {showChat && (

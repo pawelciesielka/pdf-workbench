@@ -33,6 +33,7 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
 - Edycja przez czat: podświetlanie, obrót i nawigacja od razu; usuwanie i przenoszenie stron, Redakcja i zamiana tekstu jako Propozycje zmiany do zatwierdzenia.
 - Przestrzenie robocze: Rozmowy o kilku Dokumentach naraz.
 - OCR skanów (wbudowany w Windows), Redakcja i Korekta (ADR 0003), Porównanie wersji z podsumowaniem w czacie.
+- Podpis elektroniczny PAdES (ADR 0005) certyfikatem z magazynu Windows, np. kwalifikowanym z SimplySign Desktop: widoczny lub niewidoczny, ze znacznikiem czasu Certum. Podpisane dokumenty mają zablokowaną edycję, którą można świadomie odblokować.
 
 ## Struktura
 
@@ -44,6 +45,7 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
   - `chat.rs`: Claude API: streaming, Cytaty, narzędzia edycji, tryb „wybrane strony”, koszt
   - `editor.rs`: PDFium: Obiekty strony, edycja i zamiana tekstu, Czcionka zastępcza
   - `pdfops.rs`: lopdf: obrót stron, zamiana strony w obraz, niewidoczna warstwa tekstu OCR
+  - `signing.rs`: podpis PAdES przez CryptoAPI, odczyt i sprawdzanie podpisów
   - `ocr.rs`: Windows.Media.Ocr
   - `db.rs`: SQLite (migracje), indeks FTS5
   - `keys.rs`: klucz API w Menedżerze poświadczeń Windows

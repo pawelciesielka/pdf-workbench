@@ -27,7 +27,7 @@ base64 = "0.22"
 keyring = { version = "3", features = ["windows-native"] }
 lopdf = "0.47"
 urlencoding = "2"
-windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Win32_System_WinRT"] }
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_WinRT"] }
 pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_8125", "thread_safe"] }
 
 [profile.release]

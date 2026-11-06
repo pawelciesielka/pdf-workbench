@@ -88,6 +88,8 @@ interface Props {
   current: number;
   selected: number[];
   busy: boolean;
+  /** Dokument podpisany: bez obracania, usuwania, wstawiania i przenoszenia stron. */
+  locked?: boolean;
   onSelect(pages: number[], goTo?: number): void;
   onMove(pages: number[], afterPage: number): void;
   onRotate(pages: number[]): void;
@@ -122,16 +124,16 @@ export function Thumbnails(props: Props) {
     <div className="thumbnails-wrap">
       <div className="thumb-actions">
         <span className="thumb-count">{selected.length > 1 ? t("pages.selected", { n: selected.length }) : t("pages.page", { n: target[0] })}</span>
-        <button className="icon-btn" disabled={props.busy} title={t("pages.rotate")} onClick={() => props.onRotate(target)}>
+        <button className="icon-btn" disabled={props.busy || props.locked} title={t("pages.rotate")} onClick={() => props.onRotate(target)}>
           ↻
         </button>
-        <button className="icon-btn" disabled={props.busy} title={t("pages.delete")} onClick={() => props.onDelete(target)}>
+        <button className="icon-btn" disabled={props.busy || props.locked} title={t("pages.delete")} onClick={() => props.onDelete(target)}>
           🗑
         </button>
         <button className="icon-btn" disabled={props.busy} title={t("pages.extract")} onClick={() => props.onExtract(target)}>
           ⇪
         </button>
-        <button className="icon-btn" disabled={props.busy} title={t("pages.insert")} onClick={() => props.onInsert(Math.max(...target))}>
+        <button className="icon-btn" disabled={props.busy || props.locked} title={t("pages.insert")} onClick={() => props.onInsert(Math.max(...target))}>
           ⊕
         </button>
       </div>
@@ -158,7 +160,7 @@ export function Thumbnails(props: Props) {
               e.preventDefault();
               setDrop(null);
               const after = half === "before" ? p - 1 : p;
-              if (dragged.current.length && !props.busy) props.onMove(dragged.current, after);
+              if (dragged.current.length && !props.busy && !props.locked) props.onMove(dragged.current, after);
             }}
           />
         ))}

@@ -1379,3 +1379,124 @@ textarea:focus {
   background: var(--accent-soft);
   color: var(--text);
 }
+
+/* --- Podpis elektroniczny --- */
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+button.danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--danger);
+}
+.sign-bar.locked {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.sign-bar.unlocked,
+.sign-bar.broken {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.sign-bar > span {
+  flex: 1;
+  min-width: 0;
+}
+.pdf-container.mode-signbox .mark-layer {
+  cursor: crosshair;
+}
+.pdf-container.mode-signbox .mark-draft {
+  background: rgba(46, 92, 184, 0.12);
+  outline: 2px dashed #2e5cb8;
+}
+.sign-modal {
+  width: min(560px, 100%);
+}
+.sign-modal label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  margin-top: 8px;
+}
+.cert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.modal label.cert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.cert-item.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.cert-item.expired {
+  opacity: 0.55;
+  cursor: default;
+}
+.cert-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cert-main small {
+  flex-basis: 100%;
+  color: var(--muted);
+}
+.badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.sign-modal .refresh {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.sig-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow: auto;
+}
+.sig-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.sig-item small {
+  color: var(--muted);
+}
+.sig-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sig-item.ok .sig-icon {
+  color: #2f9e44;
+}
+.sig-item.bad .sig-icon,
+.sig-item.bad .sig-status {
+  color: var(--danger);
+}

@@ -4,6 +4,7 @@ mod editor;
 mod keys;
 mod ocr;
 mod pdfops;
+mod signing;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -275,6 +276,27 @@ async fn replace_text(request: Request<'_>) -> Res<Response> {
     let (out, report) =
         tokio::task::spawn_blocking(move || editor::replace_text(&bytes, &m.pages, &m.find, &m.replace, m.within)).await.map_err(err)??;
     Ok(Response::new(editor::pack(out, &report)))
+}
+
+/// Podpisy elektroniczne w pliku (puste, gdy brak) z oceną integralności.
+#[tauri::command]
+async fn pdf_signatures(request: Request<'_>) -> Res<Vec<signing::SignatureInfo>> {
+    let bytes = raw_body(&request)?;
+    tokio::task::spawn_blocking(move || signing::inspect(&bytes)).await.map_err(err)
+}
+
+/// Certyfikaty z kluczem prywatnym w magazynie Windows (np. z SimplySign Desktop).
+#[tauri::command]
+async fn signing_certs() -> Res<Vec<signing::SigningCert>> {
+    tokio::task::spawn_blocking(signing::list_certs).await.map_err(err)?
+}
+
+#[tauri::command]
+async fn sign_pdf(request: Request<'_>) -> Res<Response> {
+    let bytes = raw_body(&request)?;
+    let o: signing::SignOptions = meta(&request)?;
+    let out = tokio::task::spawn_blocking(move || signing::sign_pdf(&bytes, &o)).await.map_err(err)??;
+    Ok(Response::new(out))
 }
 
 #[tauri::command]
@@ -616,6 +638,9 @@ pub fn run() {
             page_objects,
             edit_objects,
             replace_text,
+            pdf_signatures,
+            signing_certs,
+            sign_pdf,
             ocr_image,
             save_page_texts,
             list_recent,
