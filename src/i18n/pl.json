@@ -126,6 +126,7 @@
   "obj.fontSize": "Rozmiar czcionki (pt)",
   "obj.color": "Kolor tekstu",
   "obj.colorOther": "Inny kolor…",
+  "note.hint": "Kliknij, by dodać notatkę. Zaznaczoną przeciągniesz, a dwuklikiem poprawisz. Kolor i rozmiar działają na zaznaczoną notatkę.",
   "obj.bold": "Pogrubienie",
   "obj.delete": "Usuń (Delete)",
   "obj.newTextPlaceholder": "Wpisz tekst…",

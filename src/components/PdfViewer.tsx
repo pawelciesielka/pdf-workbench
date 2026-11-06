@@ -44,6 +44,8 @@ export interface PdfViewerHandle {
   undoAnnotation(): boolean;
   redoAnnotation(): boolean;
   setHighlightColor(color: string): void;
+  /** Kolor i rozmiar Notatki tekstowej: dla zaznaczonych notatek i kolejnych nowych. */
+  setFreeTextStyle(style: { color?: string; size?: number }): void;
   highlightText(page: number, text: string, color: string): Promise<void>;
   selectionMarks(kind: Mark["kind"]): Mark[];
   /** Rozszerza zaznaczenie do całych słów; zwraca tekst i przybliżony krój. */
@@ -180,7 +182,32 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         setCurrentPage(viewer.currentPageNumber);
         applyMode(cb.current.editorMode);
       });
-      eventBus.on("annotationeditoruimanager", (e: { uiManager: UiManager }) => {
+      // pdf.js przesuwa tylko zaznaczone Adnotacje: pierwsze przeciągnięcie jedynie zaznacza.
+      // Zaznaczamy więc Adnotację już przy wciśnięciu przycisku — da się ją złapać i przesunąć od razu.
+      containerRef.current.addEventListener(
+        "pointerdown",
+        (e) => {
+          if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey) return;
+          const target = e.target as HTMLElement;
+          if (target.closest(".editToolbar, [contenteditable='true']")) return;
+          const div = target.closest<HTMLElement>(".annotationEditorLayer [id^='pdfjs_internal_editor_']");
+          const ui = uiRef.current as unknown as { getEditor(id: string): { isSelected: boolean } | undefined; setSelected(ed: unknown): void } | null;
+          const ed = div && ui?.getEditor(div.id);
+          if (ed && !ed.isSelected) ui!.setSelected(ed);
+        },
+        { capture: true },
+      );
+      // Notatka tekstowa (FreeText) to sam tekst na stronie: pdf.js dokleja do niej żółte okienko
+      // z tą samą treścią (jak do komentarza), które tylko zasłania stronę — usuwamy je.
+      eventBus.on("annotationlayerrendered", (e: { source: { div: HTMLElement } }) => {
+        for (const el of e.source.div.querySelectorAll<HTMLElement>(".annotationLayer .freeTextAnnotation")) {
+          el.classList.remove("popupTriggerArea");
+          el.removeAttribute("aria-haspopup");
+          const id = el.dataset.annotationId;
+          if (id) e.source.div.querySelector(`.annotationLayer [data-annotation-id="popup_${CSS.escape(id)}"]`)?.remove();
+        }
+      });
+      eventBus.on("annotationeditoruimanager",(e: { uiManager: UiManager }) => {
         uiRef.current = e.uiManager;
         if (import.meta.env.DEV) (window as unknown as { __pdfui: unknown }).__pdfui = e.uiManager;
       });
@@ -440,6 +467,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
           type: pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
           value: HIGHLIGHT_COLORS[color] ?? color,
         });
+      },
+      setFreeTextStyle({ color, size }) {
+        const bus = busRef.current;
+        if (color) bus?.dispatch("switchannotationeditorparams", { source: null, type: pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR, value: color });
+        if (size) bus?.dispatch("switchannotationeditorparams", { source: null, type: pdfjsLib.AnnotationEditorParamsType.FREETEXT_SIZE, value: size });
       },
       async highlightText(page, text, color) {
         const v = viewerRef.current;

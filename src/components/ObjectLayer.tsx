@@ -74,7 +74,7 @@ export function ColorInput({ value, title, onCommit }: { value: string; title: s
 const PRESET_COLORS = ["#000000", "#444444", "#ffffff", "#d92525", "#e8710a", "#f2c200", "#1e8e3e", "#1a73e8", "#2f5bd3", "#9334e6"];
 
 /** Kolor tekstu: gotowe kolory jednym kliknięciem i „Inny…” z pełnym wyborem. */
-function ColorMenu({ value, onPick }: { value: string; onPick(color: string): void }) {
+export function ColorMenu({ value, onPick }: { value: string; onPick(color: string): void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {

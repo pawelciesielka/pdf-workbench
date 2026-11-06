@@ -84,14 +84,15 @@ textarea {
   color: inherit;
 }
 
-button {
+/* Bez przycisków pdf.js (pasek notatki, edytory) — mają własne style i ikony. */
+button:not(:where(.editToolbar, .annotationEditorLayer) *) {
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--panel);
   border-radius: 6px;
   padding: 5px 10px;
 }
-button:hover:not(:disabled) {
+button:not(:where(.editToolbar, .annotationEditorLayer) *):hover:not(:disabled) {
   background: var(--panel-2);
 }
 button:disabled {
@@ -1588,4 +1589,17 @@ button.danger:hover:not(:disabled) {
 .batch-place-bar > span {
   flex: 1;
   min-width: 0;
+}
+
+/* Pasek Notatki tekstowej pdf.js: kolor wybiera się w pasku narzędzi programu. */
+.editToolbar .basicColorPicker,
+.editToolbar .buttons .basicColorPicker + .divider.divider {
+  display: none;
+}
+.editToolbar button {
+  line-height: 0;
+  vertical-align: top;
+}
+.editToolbar .basic::before {
+  vertical-align: top;
 }

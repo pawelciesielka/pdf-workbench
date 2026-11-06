@@ -22,7 +22,7 @@ import { extractPageTexts, loadPdf, type PDFDocumentProxy } from "../lib/pdf";
 import { ChatPanel, type ChatPanelHandle } from "./ChatPanel";
 import { changesForChat, CompareView } from "./CompareView";
 import { HIGHLIGHT_COLORS, PdfViewer, type EditorMode, type PdfViewerHandle, type SelectionInfo } from "./PdfViewer";
-import type { TextStyle } from "./ObjectLayer";
+import { ColorMenu, type TextStyle } from "./ObjectLayer";
 import { LAST_PAGE, pdfDate, SignaturesDialog, SignDialog, signersSummary, UnlockDialog, visibleLines, type SignChoice } from "./Signing";
 import { Thumbnails } from "./Thumbnails";
 
@@ -117,6 +117,12 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const [, setStackVersion] = useState(0);
   const [docVersion, setDocVersion] = useState(0);
   const [textStyle, setTextStyle] = useState<TextStyle>({ fontSize: 12, color: "#000000", bold: false });
+  /** Kolor i rozmiar Notatek tekstowych (pdf.js FreeText). */
+  const [noteStyle, setNoteStyle] = useState({ color: "#000000", size: 10 });
+  const changeNoteStyle = (patch: { color?: string; size?: number }) => {
+    setNoteStyle((s) => ({ ...s, ...patch }));
+    viewerRef.current?.setFreeTextStyle(patch);
+  };
   const [signatures, setSignatures] = useState<SignatureInfo[]>([]);
   /** Zaufanie do podpisów (łańcuch, unieważnienie, lista UE) — sprawdzane w tle po wczytaniu. */
   const [trust, setTrust] = useState<TrustInfo[] | null>(null);
@@ -716,6 +722,19 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
                 }}
               />
             ))}
+          </div>
+        )}
+        {editorMode === "freetext" && (
+          <div className="text-style">
+            <select value={noteStyle.size} title={t("obj.fontSize")} onChange={(e) => changeNoteStyle({ size: Number(e.target.value) })}>
+              {FONT_SIZES.map((n) => (
+                <option key={n} value={n}>
+                  {n} pt
+                </option>
+              ))}
+            </select>
+            <ColorMenu value={noteStyle.color} onPick={(color) => changeNoteStyle({ color })} />
+            <span className="mode-hint">{t("note.hint")}</span>
           </div>
         )}
         {(editorMode === "addtext" || editorMode === "objects") && (
