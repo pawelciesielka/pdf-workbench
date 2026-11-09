@@ -51,3 +51,7 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
   - `ocr.rs`: Windows.Media.Ocr
   - `db.rs`: SQLite (migracje), indeks FTS5
   - `keys.rs`: klucz API w Menedżerze poświadczeń Windows
+
+## Licencja
+
+MIT — zobacz [LICENSE](LICENSE). Dołączona biblioteka `src-tauri/pdfium/pdfium.dll` (kompilacja [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)) ma własne licencje: [LICENSE-pdfium](src-tauri/pdfium/LICENSE-pdfium) i [LICENSE-pdfium-google](src-tauri/pdfium/LICENSE-pdfium-google). pdf.js jest na licencji Apache 2.0.
