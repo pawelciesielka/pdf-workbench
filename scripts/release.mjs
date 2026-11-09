@@ -20,6 +20,7 @@ const edit = (file, re, to) => {
   writeFileSync(file, s.replace(re, to));
 };
 edit("package.json", /("version":\s*")[^"]+"/, `$1${version}"`);
+edit("package-lock.json", /("name":\s*"pdf-workbench",\s*"version":\s*")[^"]+"/g, `$1${version}"`);
 edit("src-tauri/tauri.conf.json", /("version":\s*")[^"]+"/, `$1${version}"`);
 edit("src-tauri/Cargo.toml", /^(version\s*=\s*")[^"]+"/m, `$1${version}"`);
 
