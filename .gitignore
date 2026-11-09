@@ -5,3 +5,4 @@ src-tauri/gen/
 .claude/settings.local.json
 *.log
 public/pdfjs/
+release/

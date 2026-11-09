@@ -5,6 +5,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DocumentView, type DocumentViewHandle } from "./components/DocumentView";
 import { SettingsDialog, type Theme } from "./components/SettingsDialog";
+import { UpdateBanner, useUpdates } from "./components/Updates";
 import { BatchSign } from "./components/Signing";
 import type { Placement } from "./lib/api";
 import { StartScreen } from "./components/StartScreen";
@@ -50,6 +51,7 @@ export default function App() {
   tabsRef.current = tabs;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+  const updates = useUpdates(() => Object.values(dirtyRef.current).some(Boolean));
   if (import.meta.env.DEV) {
     // Uchwyt do testów w trybie deweloperskim (WebView2 + CDP).
     (window as unknown as { __pdfwb: unknown }).__pdfwb = { views: views.current, tabs: tabsRef, open: (p: string) => openPathsRef.current?.([p]), batch: (files: string[]) => setBatchFiles(files) };
@@ -417,8 +419,9 @@ export default function App() {
 
       {dragging && <div className="drop-overlay">{t("drop.here")}</div>}
       {toast && <div className={`toast ${toast.kind}`}>{toast.text}</div>}
+      <UpdateBanner updates={updates} />
       {showSettings && settings && (
-        <SettingsDialog settings={settings} theme={theme} onTheme={setTheme} onChanged={refreshSettings} onClose={() => setShowSettings(false)} />
+        <SettingsDialog settings={settings} updates={updates} theme={theme} onTheme={setTheme} onChanged={refreshSettings} onClose={() => setShowSettings(false)} />
       )}
       {batchFiles && <BatchSign files={batchFiles} onClose={() => setBatchFiles(null)} onOpen={(p) => openPaths([p])} placeInEditor={placeInEditor} />}
       {wsDialog && <WorkspaceDialog openDocs={docTabs.map((d) => d.info)} editing={wsDialog.editing} onOpen={openWorkspace} onClose={() => setWsDialog(null)} />}

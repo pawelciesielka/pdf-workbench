@@ -1603,3 +1603,20 @@ button.danger:hover:not(:disabled) {
 .editToolbar .basic::before {
   vertical-align: top;
 }
+
+/* --- Aktualizacje ---------------------------------------------------------- */
+.update-banner {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  z-index: 65;
+  max-width: calc(100% - 40px);
+}

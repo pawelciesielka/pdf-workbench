@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Uprawnienia głównego okna",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-destroy", "core:window:allow-set-theme", "dialog:allow-open", "dialog:allow-save", "dialog:allow-message"]
+  "permissions": ["core:default", "core:window:allow-destroy", "core:window:allow-set-theme", "dialog:allow-open", "dialog:allow-save", "dialog:allow-message", "updater:default", "process:allow-restart"]
 }

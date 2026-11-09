@@ -271,5 +271,18 @@
   "sign.trustFailed": "Nie udało się sprawdzić zaufania: {error}",
   "sign.sameForRest": "To samo miejsce w pozostałych plikach ({n})",
   "sign.defaultPlace": "Domyślne miejsce",
-  "sign.batchPlaceBar": "Podpisywanie wielu plików — plik {i} z {n}: przeciągnij myszą po stronie, gdzie ma być podpis."
+  "sign.batchPlaceBar": "Podpisywanie wielu plików — plik {i} z {n}: przeciągnij myszą po stronie, gdzie ma być podpis.",
+  "updates.title": "Aktualizacje",
+  "updates.version": "Wersja {v}",
+  "updates.check": "Sprawdź aktualizacje",
+  "updates.checking": "Sprawdzanie…",
+  "updates.upToDate": "Masz najnowszą wersję.",
+  "updates.available": "Dostępna nowa wersja {v}.",
+  "updates.install": "Zainstaluj i uruchom ponownie",
+  "updates.later": "Później",
+  "updates.downloading": "Pobieranie aktualizacji…",
+  "updates.downloadingPct": "Pobieranie aktualizacji… {n}%",
+  "updates.error": "Nie udało się sprawdzić aktualizacji: {e}",
+  "updates.unsaved": "Masz niezapisane zmiany. Aktualizacja zamknie program i zmiany przepadną. Kontynuować?",
+  "updates.devMode": "W wersji deweloperskiej aktualizacje są wyłączone."
 }

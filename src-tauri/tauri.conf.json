@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "resources": { "pdfium/pdfium.dll": "pdfium.dll", "pdfium/LICENSE-pdfium": "LICENSE-pdfium" },
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
@@ -35,6 +36,13 @@
     ],
     "windows": {
       "nsis": { "installMode": "currentUser", "languages": ["Polish", "English"], "customLanguageFiles": { "Polish": "nsis/Polish.nsh" } }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFMzlCQ0Q4OEQ4MEQ3MEUKUldRTzE0Q04yTHc1dnY4MzZKSmM0NTVabWcvdWhsc3dmZzhTMURWUDdXZk9JVDRkZ0pQUGJDMVMK",
+      "endpoints": ["https://github.com/pawelciesielka/pdf-workbench/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
     }
   }
 }

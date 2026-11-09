@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { UpdateSettings, type Updates } from "./Updates";
 import { MODEL_LABELS, t } from "../i18n";
 import { api, errorText, type Settings } from "../lib/api";
 
@@ -6,15 +8,20 @@ export type Theme = "system" | "light" | "dark";
 
 interface Props {
   settings: Settings;
+  updates: Updates;
   theme: Theme;
   onTheme(t: Theme): void;
   onChanged(): void;
   onClose(): void;
 }
 
-export function SettingsDialog({ settings, theme, onTheme, onChanged, onClose }: Props) {
+export function SettingsDialog({ settings, updates, theme, onTheme, onChanged, onClose }: Props) {
   const [key, setKey] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion().then(setVersion, () => {});
+  }, []);
 
   const saveKey = async () => {
     try {
@@ -80,6 +87,8 @@ export function SettingsDialog({ settings, theme, onTheme, onChanged, onClose }:
             </button>
           ))}
         </div>
+
+        <UpdateSettings updates={updates} version={version} />
 
         <div className="modal-footer">
           <button className="primary" onClick={onClose}>

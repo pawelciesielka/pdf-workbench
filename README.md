@@ -16,11 +16,21 @@ npm install
 npm run tauri dev
 ```
 
-Instalator (NSIS) trafia do `src-tauri/target/release/bundle/nsis/`:
+Instalator (NSIS) trafia do `src-tauri/target/release/bundle/nsis/`. Budowanie podpisuje pliki aktualizacji, więc wymaga klucza w `TAURI_SIGNING_PRIVATE_KEY` (zwykle robi to skrypt wydania poniżej):
 
 ```bash
 npm run tauri build
 ```
+
+## Wydanie i aktualizacje
+
+Program po starcie sprawdza `latest.json` z najnowszego wydania na GitHubie i proponuje aktualizację; można to też zrobić ręcznie w Ustawieniach. Aktualizacja instaluje się tylko z poprawnym podpisem kluczem wydawcy (klucz publiczny jest w `tauri.conf.json`, prywatny w `%USERPROFILE%\.tauri\pdf-workbench.key` i nigdy nie trafia do repozytorium).
+
+```bash
+npm run release -- 0.2.0 "Opis zmian"
+```
+
+Skrypt ustawia wersję w `package.json`, `tauri.conf.json` i `Cargo.toml`, buduje podpisany instalator i składa w `release/v0.2.0/` instalator oraz `latest.json`. Potem: commit, push i nowe wydanie na GitHubie z tagiem `v0.2.0` i oboma plikami (jako zwykłe wydanie, nie pre-release).
 
 PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `samples/skan-testowy.pdf` to ta sama umowa bez warstwy tekstu (do OCR).
 
