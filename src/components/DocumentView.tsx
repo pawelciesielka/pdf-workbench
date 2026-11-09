@@ -737,6 +737,11 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
             <span className="mode-hint">{t("note.hint")}</span>
           </div>
         )}
+        {editorMode === "stamp" && (
+          <div className="text-style">
+            <span className="mode-hint">{t("image.hint")}</span>
+          </div>
+        )}
         {(editorMode === "addtext" || editorMode === "objects") && (
           <div className="text-style">
             {editorMode === "addtext" && (

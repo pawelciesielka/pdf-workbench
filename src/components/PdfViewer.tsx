@@ -182,11 +182,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         setCurrentPage(viewer.currentPageNumber);
         applyMode(cb.current.editorMode);
       });
+      let stampHadSelection = false;
       // pdf.js przesuwa tylko zaznaczone Adnotacje: pierwsze przeciągnięcie jedynie zaznacza.
       // Zaznaczamy więc Adnotację już przy wciśnięciu przycisku — da się ją złapać i przesunąć od razu.
       containerRef.current.addEventListener(
         "pointerdown",
         (e) => {
+          stampHadSelection = !!(uiRef.current as unknown as { hasSelection?: boolean } | null)?.hasSelection;
           if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey) return;
           const target = e.target as HTMLElement;
           if (target.closest(".editToolbar, [contenteditable='true']")) return;
@@ -197,6 +199,19 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         },
         { capture: true },
       );
+      // W trybie Obrazu pdf.js ignoruje kliknięcie w stronę (plik wybiera się jego osobnym przyciskiem
+      // „Dodaj obraz”). U nas kliknięcie w puste miejsce otwiera wybór pliku i wstawia obraz w tym miejscu.
+      containerRef.current.addEventListener("click", (e) => {
+        if (cb.current.editorMode !== "stamp" || e.button !== 0) return;
+        if (stampHadSelection) return; // pierwsze kliknięcie obok tylko odznacza obraz
+        const target = e.target as HTMLElement;
+        if (!target.classList.contains("annotationEditorLayer")) return;
+        const pageNo = Number(target.closest<HTMLElement>(".page")?.dataset.pageNumber);
+        const view = pageNo ? viewerRef.current?.getPageView(pageNo - 1) : null;
+        const layer = (view as unknown as { annotationEditorLayer?: { annotationEditorLayer?: { createAndAddNewEditor(ev: MouseEvent, centered: boolean): unknown } } })
+          ?.annotationEditorLayer?.annotationEditorLayer;
+        layer?.createAndAddNewEditor(e, true);
+      });
       // Notatka tekstowa (FreeText) to sam tekst na stronie: pdf.js dokleja do niej żółte okienko
       // z tą samą treścią (jak do komentarza), które tylko zasłania stronę — usuwamy je.
       eventBus.on("annotationlayerrendered", (e: { source: { div: HTMLElement } }) => {

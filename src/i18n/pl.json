@@ -126,6 +126,7 @@
   "obj.fontSize": "Rozmiar czcionki (pt)",
   "obj.color": "Kolor tekstu",
   "obj.colorOther": "Inny kolor…",
+  "image.hint": "Kliknij w stronę i wybierz plik (najlepiej PNG z przezroczystym tłem). Obraz przeciągniesz, a rogami zmienisz jego rozmiar.",
   "note.hint": "Kliknij, by dodać notatkę. Zaznaczoną przeciągniesz, a dwuklikiem poprawisz. Kolor i rozmiar działają na zaznaczoną notatkę.",
   "obj.bold": "Pogrubienie",
   "obj.delete": "Usuń (Delete)",
