@@ -680,6 +680,7 @@ fn gmail_status(app: tauri::AppHandle, state: State<'_, AppState>) -> GmailStatu
 
 fn forget_google(state: &AppState) -> Res<()> {
     *state.google_token.lock().unwrap() = None;
+    gmail::clear_cache();
     put_setting(state, "google.email", "")?;
     keys::clear_named(gmail::KEY_REFRESH)
 }

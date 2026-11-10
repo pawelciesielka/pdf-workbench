@@ -204,6 +204,9 @@ async fn check(resp: reqwest::Response) -> Res<Value> {
     let msg = v["error"]["message"].as_str().unwrap_or("").to_string();
     Err(match status.as_u16() {
         401 => "Gmail odrzucił logowanie — połącz ponownie w oknie Poczty.".into(),
+        403 | 429 if msg.contains("Quota exceeded") || msg.contains("Rate Limit") || msg.contains("rateLimitExceeded") || status.as_u16() == 429 => {
+            "Gmail chwilowo ogranicza liczbę zapytań (limit na minutę dla konta). Odczekaj minutę i spróbuj ponownie.".into()
+        }
         403 if msg.contains("has not been used") || msg.contains("disabled") => {
             format!("Gmail API nie jest włączone w projekcie Google Cloud. Włącz je w konsoli i spróbuj ponownie. ({msg})")
         }
@@ -299,8 +302,27 @@ fn mail_item(m: &Value) -> MailItem {
     }
 }
 
+/// Pełne wiadomości już pobrane w tej sesji (treść maila się nie zmienia). Pobranie z format=full
+/// kosztuje 60 jednostek limitu Gmaila, a nowe projekty mają tylko 6000 jednostek na minutę na
+/// użytkownika — bez pamięci kilka odświeżeń listy w ciągu minuty przekraczało limit.
+static MESSAGES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Value>>> = std::sync::LazyLock::new(Default::default);
+const CACHE_MAX: usize = 300;
+
+pub fn clear_cache() {
+    MESSAGES.lock().unwrap().clear();
+}
+
 async fn message(http: &reqwest::Client, token: &str, id: &str) -> Res<Value> {
-    get(http, token, &format!("/messages/{}?format=full", urlencoding::encode(id))).await
+    if let Some(m) = MESSAGES.lock().unwrap().get(id) {
+        return Ok(m.clone());
+    }
+    let m = get(http, token, &format!("/messages/{}?format=full", urlencoding::encode(id))).await?;
+    let mut cache = MESSAGES.lock().unwrap();
+    if cache.len() >= CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(id.to_string(), m.clone());
+    Ok(m)
 }
 
 /// Zapytanie zawężone do nadawców z domeny konta (np. `from:@firma.pl`).
