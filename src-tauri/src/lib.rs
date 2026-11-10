@@ -785,9 +785,12 @@ fn gmail_set_options(state: State<'_, AppState>, query: String, done_label: Stri
 }
 
 #[tauri::command]
-async fn gmail_list(state: State<'_, AppState>) -> Res<Vec<gmail::MailItem>> {
-    let (token, _) = google_session(&state).await?;
-    let query = setting(&state, "gmail.query").unwrap_or_else(|| gmail::DEFAULT_QUERY.into());
+async fn gmail_list(state: State<'_, AppState>, org_only: Option<bool>) -> Res<Vec<gmail::MailItem>> {
+    let (token, email) = google_session(&state).await?;
+    let mut query = setting(&state, "gmail.query").unwrap_or_else(|| gmail::DEFAULT_QUERY.into());
+    if org_only.unwrap_or(false) {
+        query = gmail::org_query(&query, &email);
+    }
     gmail::list(&state.http, &token, &query).await
 }
 
@@ -805,6 +808,12 @@ async fn gmail_reply_draft(state: State<'_, AppState>, id: String, files: Vec<St
     let (token, email) = google_session(&state).await?;
     let label = setting(&state, "gmail.done_label").unwrap_or_else(|| gmail::DONE_LABEL.into());
     gmail::reply_draft(&state.http, &token, &email, &id, &files, &text, &label).await
+}
+
+#[tauri::command]
+async fn gmail_send_draft(state: State<'_, AppState>, draft_id: String) -> Res<String> {
+    let (token, _) = google_session(&state).await?;
+    gmail::send_draft(&state.http, &token, &draft_id).await
 }
 
 /// Otwiera w przeglądarce tylko adresy Gmaila i stron konfiguracji Google.
@@ -904,6 +913,7 @@ pub fn run() {
             gmail_list,
             gmail_download,
             gmail_reply_draft,
+            gmail_send_draft,
             open_url
         ])
         .run(tauri::generate_context!())

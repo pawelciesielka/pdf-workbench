@@ -1735,3 +1735,34 @@ button.danger:hover:not(:disabled) {
   margin-top: 6px;
   font-size: 12px;
 }
+.mail-rcpt b {
+  font-weight: 600;
+  margin-right: 4px;
+}
+.mail-send-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+.mail-toolbar {
+  position: sticky;
+  top: -20px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 6px -24px 0;
+  padding: 8px 24px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.mail-modal .mail-toolbar label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  margin: 0;
+}

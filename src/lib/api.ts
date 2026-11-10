@@ -288,9 +288,10 @@ export const api = {
   gmailConnect: () => invoke<string>("gmail_connect"),
   gmailDisconnect: () => invoke<void>("gmail_disconnect"),
   gmailSetOptions: (query: string, doneLabel: string) => invoke<void>("gmail_set_options", { query, doneLabel }),
-  gmailList: () => invoke<MailItem[]>("gmail_list"),
+  gmailList: (orgOnly: boolean) => invoke<MailItem[]>("gmail_list", { orgOnly }),
   gmailDownload: (id: string, partIds: string[]) => invoke<string[]>("gmail_download", { id, partIds }),
   gmailReplyDraft: (id: string, files: string[], text: string) => invoke<DraftResult>("gmail_reply_draft", { id, files, text }),
+  gmailSendDraft: (draftId: string) => invoke<string>("gmail_send_draft", { draftId }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 };
 

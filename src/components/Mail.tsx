@@ -18,7 +18,16 @@ const senderName = (from: string) => from.replace(/<[^>]*>/, "").replace(/"/g, "
 const when = (ms: number) => new Date(ms).toLocaleString("pl-PL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 const kb = (n: number) => (n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} kB`);
 
-type Outcome = { mail: MailItem; draft?: DraftResult; error?: string };
+type Outcome = {
+  mail: MailItem;
+  /** Szkic jeszcze powstaje. */
+  pending?: boolean;
+  draft?: DraftResult;
+  error?: string;
+  sending?: boolean;
+  sent?: boolean;
+  sendError?: string;
+};
 
 /**
  * Poczta do podpisu: maile z PDF-ami z Gmaila → pobranie załączników → podpis wielu plików naraz
@@ -44,6 +53,22 @@ export function MailDialog(props: {
   const [outcomes, setOutcomes] = useState<Outcome[] | null>(null);
   /** Wczytanie innego klienta OAuth mimo zapisanego. */
   const [forceSetup, setForceSetup] = useState(false);
+  /** Tylko maile od nadawców z domeny konta (zapamiętane do wyłączenia). */
+  const [orgOnly, setOrgOnly] = useState(() => {
+    try {
+      return localStorage.getItem("mail.orgOnly") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleOrgOnly = (on: boolean) => {
+    setOrgOnly(on);
+    try {
+      localStorage.setItem("mail.orgOnly", on ? "1" : "0");
+    } catch {
+      /* brak localStorage */
+    }
+  };
 
   const refreshStatus = useCallback(async () => {
     const s = await api.gmailStatus();
@@ -58,7 +83,7 @@ export function MailDialog(props: {
     setBusy(t("mail.loading"));
     setError(null);
     try {
-      setMails(await api.gmailList());
+      setMails(await api.gmailList(orgOnly));
       setPicked({});
     } catch (e) {
       setError(errorText(e));
@@ -66,8 +91,9 @@ export function MailDialog(props: {
     } finally {
       setBusy(null);
     }
-  }, [refreshStatus]);
+  }, [refreshStatus, orgOnly]);
 
+  // Także po przełączeniu filtra organizacji (zmienia się loadMails).
   useEffect(() => {
     refreshStatus()
       .then((s) => {
@@ -159,27 +185,46 @@ export function MailDialog(props: {
     const items = await props.sign(all);
     if (!items) return;
     const byPath = new Map(items.map((i) => [i.path, i]));
-    const results: Outcome[] = [];
+    // Od razu widok wyników (bez powrotu do listy maili), szkice dochodzą po kolei.
+    setOutcomes(jobs.map(({ mail }) => ({ mail, pending: true })));
     setBusy(t("mail.drafting"));
-    for (const { mail, files } of jobs) {
+    for (const [i, { mail, files }] of jobs.entries()) {
       const signed = files.map((f) => byPath.get(f));
       const failed = signed.filter((s) => !s?.output);
-      if (failed.length) {
-        results.push({ mail, error: t("mail.notAllSigned", { n: failed.length }) });
-        continue;
+      let result: Outcome;
+      if (failed.length) result = { mail, error: t("mail.notAllSigned", { n: failed.length }) };
+      else {
+        try {
+          result = { mail, draft: await api.gmailReplyDraft(mail.id, signed.map((s) => s!.output!), reply) };
+        } catch (e) {
+          result = { mail, error: errorText(e) };
+        }
       }
-      try {
-        results.push({ mail, draft: await api.gmailReplyDraft(mail.id, signed.map((s) => s!.output!), reply) });
-      } catch (e) {
-        results.push({ mail, error: errorText(e) });
-      }
+      updateOutcome(i, () => result);
     }
     setBusy(null);
-    setOutcomes(results);
+  };
+
+  const updateOutcome = (i: number, f: (o: Outcome) => Outcome) => setOutcomes((cur) => (cur ? cur.map((o, k) => (k === i ? f(o) : o)) : cur));
+
+  const send = async (i: number, draftId: string) => {
+    updateOutcome(i, (o) => ({ ...o, sending: true, sendError: undefined }));
+    try {
+      await api.gmailSendDraft(draftId);
+      updateOutcome(i, (o) => ({ ...o, sending: false, sent: true }));
+    } catch (e) {
+      updateOutcome(i, (o) => ({ ...o, sending: false, sendError: errorText(e) }));
+    }
+  };
+
+  const unsent = (outcomes ?? []).map((o, i) => ({ o, i })).filter(({ o }) => o.draft && !o.sent && !o.sending);
+  const sendAll = async () => {
+    for (const { o, i } of unsent) await send(i, o.draft!.draftId);
   };
 
   if (props.hidden) return null;
 
+  const domain = status?.email?.split("@")[1]?.toLowerCase() ?? null;
   const hasOwn = !!status?.clientId && !!status?.hasSecret;
   const canLogin = !!status && (status.builtin || hasOwn);
   const loggedIn = !!status?.connected && !!status?.email;
@@ -298,7 +343,17 @@ export function MailDialog(props: {
               </div>
             )}
 
-            {mails && !mails.length && !busy && <p className="hint">{t("mail.empty")}</p>}
+            <div className="mail-toolbar">
+              <label className="check" title={t("mail.orgOnlyHint")}>
+                <input type="checkbox" checked={orgOnly} disabled={!!busy} onChange={(e) => toggleOrgOnly(e.target.checked)} />{" "}
+                {t("mail.orgOnly", { domain: domain ?? "" })}
+              </label>
+              <button className="primary" disabled={!!busy || !fileCount} onClick={signAndReply}>
+                ✍ {t("mail.signReply", { mails: selected.length, files: fileCount })}
+              </button>
+            </div>
+
+            {mails && !mails.length && !busy && <p className="hint">{orgOnly ? t("mail.emptyOrg", { domain: domain ?? "" }) : t("mail.empty")}</p>}
             {mails && mails.length > 0 && (
               <div className="mail-list">
                 {mails.map((m) => {
@@ -332,23 +387,59 @@ export function MailDialog(props: {
         )}
 
         {outcomes && (
+          <div className="mail-toolbar">
+            <button
+              disabled={!!busy || outcomes.some((o) => o.sending)}
+              onClick={() => {
+                setOutcomes(null);
+                void loadMails();
+              }}
+            >
+              ← {t("mail.back")}
+            </button>
+            {unsent.length > 1 && (
+              <button className="primary" disabled={!!busy} onClick={sendAll}>
+                ➤ {t("mail.sendAll", { n: unsent.length })}
+              </button>
+            )}
+          </div>
+        )}
+        {outcomes && (
           <div className="sig-list">
-            {outcomes.map((o) => (
-              <div key={o.mail.id} className={`sig-item ${o.error ? "bad" : "ok"}`}>
+            {outcomes.map((o, i) => (
+              <div key={o.mail.id} className={`sig-item ${o.error || o.sendError ? "bad" : o.pending ? "" : "ok"}`}>
                 <div className="sig-head">
-                  <span className="sig-icon">{o.error ? "✖" : "✔"}</span>
+                  <span className="sig-icon">{o.pending || o.sending ? "…" : o.error ? "✖" : o.sent ? "✔" : "✎"}</span>
                   <b>{o.mail.subject || t("mail.noSubject")}</b>
                 </div>
+                {o.pending && <small>{t("mail.drafting")}</small>}
                 {o.error && <small className="sig-status">{o.error}</small>}
                 {o.draft && (
                   <>
-                    <small>{t("mail.draftTo", { to: [...o.draft.to, ...o.draft.cc].join(", ") })}</small>
-                    {o.draft.labelWarning && <small>{t("mail.labelFailed", { error: o.draft.labelWarning })}</small>}
-                    <small>
-                      <button className="link-btn" onClick={() => api.openUrl(o.draft!.url)}>
-                        {t("mail.openDraft")}
-                      </button>
+                    <small className="mail-rcpt">
+                      <b>{t("mail.to")}</b> {o.draft.to.join(", ")}
                     </small>
+                    {o.draft.cc.length > 0 && (
+                      <small className="mail-rcpt">
+                        <b>{t("mail.cc")}</b> {o.draft.cc.join(", ")}
+                      </small>
+                    )}
+                    {o.draft.labelWarning && <small>{t("mail.labelFailed", { error: o.draft.labelWarning })}</small>}
+                    {o.sendError && <small className="sig-status">{t("mail.sendFailed", { error: o.sendError })}</small>}
+                    <div className="mail-send-row">
+                      {o.sent ? (
+                        <small className="trust ok">✔ {t("mail.sent")}</small>
+                      ) : (
+                        <>
+                          <button className="primary" disabled={o.sending} onClick={() => send(i, o.draft!.draftId)}>
+                            {o.sending ? t("mail.sending") : `➤ ${t("mail.send")}`}
+                          </button>
+                          <button className="link-btn" disabled={o.sending} onClick={() => api.openUrl(o.draft!.url)}>
+                            {t("mail.openDraft")}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -362,23 +453,6 @@ export function MailDialog(props: {
           <button disabled={!!busy} onClick={props.onClose}>
             {t("common.close")}
           </button>
-          {outcomes ? (
-            <button
-              className="primary"
-              onClick={() => {
-                setOutcomes(null);
-                void loadMails();
-              }}
-            >
-              {t("mail.back")}
-            </button>
-          ) : (
-            status?.connected && (
-              <button className="primary" disabled={!!busy || !fileCount} onClick={signAndReply}>
-                ✍ {t("mail.signReply", { mails: selected.length, files: fileCount })}
-              </button>
-            )
-          )}
         </div>
       </div>
     </div>

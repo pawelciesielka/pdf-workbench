@@ -1,6 +1,6 @@
 //! Poczta do podpisu przez Gmail API: logowanie OAuth aplikacji desktopowej (pętla zwrotna
 //! 127.0.0.1 + PKCE), lista maili z PDF-ami, pobieranie załączników i szkic „Odpowiedz wszystkim”
-//! z podpisanymi plikami w tym samym wątku. Wysyłkę zostawiamy użytkownikowi.
+//! z podpisanymi plikami w tym samym wątku. Szkic wysyła się dopiero na wyraźne „Wyślij” użytkownika.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -301,6 +301,14 @@ fn mail_item(m: &Value) -> MailItem {
 
 async fn message(http: &reqwest::Client, token: &str, id: &str) -> Res<Value> {
     get(http, token, &format!("/messages/{}?format=full", urlencoding::encode(id))).await
+}
+
+/// Zapytanie zawężone do nadawców z domeny konta (np. `from:@firma.pl`).
+pub fn org_query(query: &str, me: &str) -> String {
+    match me.rsplit_once('@') {
+        Some((_, domain)) if !domain.is_empty() => format!("{} from:@{}", query.trim(), domain.to_lowercase()),
+        _ => query.to_string(),
+    }
 }
 
 /// Maile pasujące do zapytania Gmaila, które mają co najmniej jeden załącznik PDF.
@@ -634,6 +642,12 @@ pub async fn reply_draft(http: &reqwest::Client, token: &str, me: &str, id: &str
     })
 }
 
+/// Wysyła wcześniej utworzony szkic (po kliknięciu „Wyślij” przy widocznych adresatach).
+pub async fn send_draft(http: &reqwest::Client, token: &str, draft_id: &str) -> Res<String> {
+    let sent = post(http, token, "/drafts/send", &json!({ "id": draft_id })).await?;
+    Ok(sent["id"].as_str().unwrap_or("").to_string())
+}
+
 async fn mark_done(http: &reqwest::Client, token: &str, id: &str, name: &str) -> Res<()> {
     if name.trim().is_empty() {
         return Ok(());
@@ -719,6 +733,8 @@ mod tests {
         assert_eq!(ymd(0), (1970, 1, 1));
         assert_eq!(ymd(1_794_268_800_000), (2026, 11, 10));
         assert_eq!(sanitize(" Umowa: nr 1/2026? ", 60), "Umowa_ nr 1_2026_");
+        assert_eq!(org_query("in:inbox", "Pawel@Firma.PL"), "in:inbox from:@firma.pl");
+        assert_eq!(org_query("in:inbox", "bez-domeny"), "in:inbox");
         assert_eq!(query_param("state=a%2Bb&code=4%2F0x", "code").as_deref(), Some("4/0x"));
         let (id, secret) = parse_client_file(r#"{"installed":{"client_id":"1.apps","client_secret":"s"}}"#).unwrap();
         assert_eq!((id.as_str(), secret.as_str()), ("1.apps", "s"));
