@@ -1,6 +1,7 @@
 mod chat;
 mod db;
 mod editor;
+mod gmail;
 mod keys;
 mod ocr;
 mod pdfops;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub cancels: Mutex<HashMap<i64, Arc<AtomicBool>>>,
     /// Narzędzia czatu czekające na wynik z UI (id wywołania → odbiorca).
     pub pending_tools: Mutex<HashMap<String, tokio::sync::oneshot::Sender<chat::ToolOutcome>>>,
+    /// Token dostępu Gmail API w pamięci (token odświeżania jest w Menedżerze poświadczeń).
+    pub google_token: Mutex<Option<(String, std::time::Instant)>>,
 }
 
 impl AppState {
@@ -628,6 +631,192 @@ fn get_initial_files() -> Vec<String> {
     pdf_args(&std::env::args().collect::<Vec<_>>())
 }
 
+// --- Poczta do podpisu (Gmail) -----------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GmailStatus {
+    /// Program ma wbudowany klient OAuth (logowanie bez konfiguracji Google Cloud).
+    builtin: bool,
+    client_id: Option<String>,
+    has_secret: bool,
+    email: Option<String>,
+    connected: bool,
+    query: String,
+    done_label: String,
+    folder: String,
+}
+
+fn setting(state: &AppState, key: &str) -> Option<String> {
+    let conn = state.db.lock().unwrap();
+    db::get_setting(&conn, key).filter(|v| !v.trim().is_empty())
+}
+
+fn put_setting(state: &AppState, key: &str, value: &str) -> Res<()> {
+    let conn = state.db.lock().unwrap();
+    db::set_setting(&conn, key, value).map_err(err)
+}
+
+fn mail_folder(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path()
+        .document_dir()
+        .map(|d| d.join("PDF Workbench").join("Do podpisu"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("PDF Workbench").join("Do podpisu"))
+}
+
+#[tauri::command]
+fn gmail_status(app: tauri::AppHandle, state: State<'_, AppState>) -> GmailStatus {
+    GmailStatus {
+        builtin: BUILTIN_GOOGLE.is_some(),
+        client_id: setting(&state, "google.client_id"),
+        has_secret: keys::get_named(gmail::KEY_SECRET).is_some(),
+        email: setting(&state, "google.email"),
+        connected: keys::get_named(gmail::KEY_REFRESH).is_some(),
+        query: setting(&state, "gmail.query").unwrap_or_else(|| gmail::DEFAULT_QUERY.into()),
+        done_label: setting(&state, "gmail.done_label").unwrap_or_else(|| gmail::DONE_LABEL.into()),
+        folder: mail_folder(&app).to_string_lossy().to_string(),
+    }
+}
+
+fn forget_google(state: &AppState) -> Res<()> {
+    *state.google_token.lock().unwrap() = None;
+    put_setting(state, "google.email", "")?;
+    keys::clear_named(gmail::KEY_REFRESH)
+}
+
+fn store_client(state: &AppState, client_id: &str, secret: &str) -> Res<()> {
+    let (id, secret) = (client_id.trim(), secret.trim());
+    if !id.ends_with(".apps.googleusercontent.com") {
+        return Err("Identyfikator klienta powinien kończyć się na „.apps.googleusercontent.com”.".into());
+    }
+    if secret.is_empty() {
+        return Err("Podaj tajny klucz klienta.".into());
+    }
+    if setting(state, "google.client_id").as_deref() != Some(id) {
+        forget_google(state)?;
+    }
+    put_setting(state, "google.client_id", id)?;
+    keys::set_named(gmail::KEY_SECRET, secret)
+}
+
+#[tauri::command]
+fn gmail_set_client(state: State<'_, AppState>, client_id: String, client_secret: String) -> Res<()> {
+    store_client(&state, &client_id, &client_secret)
+}
+
+#[tauri::command]
+fn gmail_load_client_file(state: State<'_, AppState>, path: String) -> Res<()> {
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("Nie można odczytać pliku: {e}"))?;
+    let (id, secret) = gmail::parse_client_file(&text)?;
+    store_client(&state, &id, &secret)
+}
+
+/// Klient OAuth wkompilowany przy budowaniu (build.rs); None w wersjach bez niego.
+const BUILTIN_GOOGLE: Option<(&str, &str)> = match (option_env!("PDFWB_GOOGLE_CLIENT_ID"), option_env!("PDFWB_GOOGLE_CLIENT_SECRET")) {
+    (Some(id), Some(secret)) => Some((id, secret)),
+    _ => None,
+};
+
+/// Własny klient użytkownika (Zaawansowane) ma pierwszeństwo przed wbudowanym.
+fn google_client(state: &AppState) -> Res<(String, String)> {
+    match (setting(state, "google.client_id"), keys::get_named(gmail::KEY_SECRET), BUILTIN_GOOGLE) {
+        (Some(id), Some(secret), _) => Ok((id, secret)),
+        (_, _, Some((id, secret))) => Ok((id.to_string(), secret.to_string())),
+        _ => Err("Ta wersja programu nie ma wbudowanego logowania Google — wczytaj własnego klienta OAuth w opcjach zaawansowanych.".into()),
+    }
+}
+
+#[tauri::command]
+fn gmail_clear_client(state: State<'_, AppState>) -> Res<()> {
+    forget_google(&state)?;
+    put_setting(&state, "google.client_id", "")?;
+    keys::clear_named(gmail::KEY_SECRET)
+}
+
+/// Ważny token dostępu i adres konta; odświeża token, gdy wygasa.
+async fn google_session(state: &AppState) -> Res<(String, String)> {
+    let email = setting(state, "google.email").ok_or("Połącz się z Gmailem w oknie Poczty.")?;
+    if let Some((token, until)) = state.google_token.lock().unwrap().clone() {
+        if until > std::time::Instant::now() + std::time::Duration::from_secs(60) {
+            return Ok((token, email));
+        }
+    }
+    let (id, secret) = google_client(state)?;
+    let refresh = keys::get_named(gmail::KEY_REFRESH).ok_or("Połącz się z Gmailem w oknie Poczty.")?;
+    match gmail::refresh(&state.http, &id, &secret, &refresh).await {
+        Ok(t) => {
+            *state.google_token.lock().unwrap() = Some((t.access.clone(), t.expires));
+            Ok((t.access, email))
+        }
+        Err(e) if e == "invalid_grant" => {
+            forget_google(state)?;
+            Err("Dostęp do Gmaila wygasł lub został cofnięty — połącz się ponownie.".into())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+async fn gmail_connect(state: State<'_, AppState>) -> Res<String> {
+    let (id, secret) = google_client(&state)?;
+    let auth_id = id.clone();
+    let grant = tokio::task::spawn_blocking(move || gmail::authorize(&auth_id)).await.map_err(err)??;
+    let token = gmail::exchange(&state.http, &id, &secret, &grant).await.map_err(|e| if e == "invalid_grant" { "Kod logowania wygasł — spróbuj ponownie.".into() } else { e })?;
+    let refresh = token.refresh.clone().ok_or("Google nie zwrócił tokenu odświeżania. Usuń dostęp „PDF Workbench” na myaccount.google.com/permissions i połącz ponownie.")?;
+    let email = gmail::profile_email(&state.http, &token.access).await?;
+    keys::set_named(gmail::KEY_REFRESH, &refresh)?;
+    put_setting(&state, "google.email", &email)?;
+    *state.google_token.lock().unwrap() = Some((token.access, token.expires));
+    Ok(email)
+}
+
+#[tauri::command]
+async fn gmail_disconnect(state: State<'_, AppState>) -> Res<()> {
+    if let Some(r) = keys::get_named(gmail::KEY_REFRESH) {
+        gmail::revoke(&state.http, &r).await;
+    }
+    forget_google(&state)
+}
+
+#[tauri::command]
+fn gmail_set_options(state: State<'_, AppState>, query: String, done_label: String) -> Res<()> {
+    put_setting(&state, "gmail.query", query.trim())?;
+    put_setting(&state, "gmail.done_label", done_label.trim())
+}
+
+#[tauri::command]
+async fn gmail_list(state: State<'_, AppState>) -> Res<Vec<gmail::MailItem>> {
+    let (token, _) = google_session(&state).await?;
+    let query = setting(&state, "gmail.query").unwrap_or_else(|| gmail::DEFAULT_QUERY.into());
+    gmail::list(&state.http, &token, &query).await
+}
+
+#[tauri::command]
+async fn gmail_download(app: tauri::AppHandle, state: State<'_, AppState>, id: String, part_ids: Vec<String>) -> Res<Vec<String>> {
+    let (token, _) = google_session(&state).await?;
+    gmail::download(&state.http, &token, &id, &part_ids, &mail_folder(&app)).await
+}
+
+#[tauri::command]
+async fn gmail_reply_draft(state: State<'_, AppState>, id: String, files: Vec<String>, text: String) -> Res<gmail::DraftResult> {
+    if files.is_empty() {
+        return Err("Brak podpisanych plików do załączenia.".into());
+    }
+    let (token, email) = google_session(&state).await?;
+    let label = setting(&state, "gmail.done_label").unwrap_or_else(|| gmail::DONE_LABEL.into());
+    gmail::reply_draft(&state.http, &token, &email, &id, &files, &text, &label).await
+}
+
+/// Otwiera w przeglądarce tylko adresy Gmaila i stron konfiguracji Google.
+#[tauri::command]
+fn open_url(url: String) -> Res<()> {
+    const ALLOWED: [&str; 3] = ["https://mail.google.com/", "https://console.cloud.google.com/", "https://myaccount.google.com/"];
+    if !ALLOWED.iter().any(|p| url.starts_with(p)) {
+        return Err("Ten adres nie może być otwarty z programu.".into());
+    }
+    gmail::open_in_browser(&url)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -667,6 +856,7 @@ pub fn run() {
                 paths: Mutex::new(HashMap::new()),
                 cancels: Mutex::new(HashMap::new()),
                 pending_tools: Mutex::new(HashMap::new()),
+                google_token: Mutex::new(None),
             });
             Ok(())
         })
@@ -703,7 +893,18 @@ pub fn run() {
             set_model,
             set_api_key,
             clear_api_key,
-            get_initial_files
+            get_initial_files,
+            gmail_status,
+            gmail_set_client,
+            gmail_load_client_file,
+            gmail_clear_client,
+            gmail_connect,
+            gmail_disconnect,
+            gmail_set_options,
+            gmail_list,
+            gmail_download,
+            gmail_reply_draft,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("błąd uruchamiania PDF Workbench");

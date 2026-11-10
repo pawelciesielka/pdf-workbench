@@ -285,6 +285,8 @@ export function BatchSign(props: {
   onOpen(path: string): void;
   /** Wskazanie miejsc podpisu w głównym edytorze (kolejne pliki w kartach); null — anulowano. */
   placeInEditor(files: string[]): Promise<(Placement | null)[] | null>;
+  /** Dalszy krok po podpisaniu (np. odpowiedzi w Gmailu); zastępuje „Zamknij”. */
+  next?: { label: string; onNext(items: BatchItem[]): void };
 }) {
   const [items, setItems] = useState<(BatchItem | null)[] | null>(null);
   const [running, setRunning] = useState(false);
@@ -360,9 +362,20 @@ export function BatchSign(props: {
           })}
         </div>
         <div className="modal-footer">
-          <button className="primary" disabled={running} onClick={props.onClose}>
-            {t("common.close")}
-          </button>
+          {props.next ? (
+            <>
+              <button disabled={running} onClick={props.onClose}>
+                {t("common.cancel")}
+              </button>
+              <button className="primary" disabled={running} onClick={() => props.next!.onNext(items.filter((x): x is BatchItem => !!x))}>
+                {props.next.label}
+              </button>
+            </>
+          ) : (
+            <button className="primary" disabled={running} onClick={props.onClose}>
+              {t("common.close")}
+            </button>
+          )}
         </div>
       </div>
     </div>

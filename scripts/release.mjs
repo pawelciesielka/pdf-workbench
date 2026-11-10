@@ -31,6 +31,11 @@ if (!env.TAURI_SIGNING_PRIVATE_KEY) {
   env.TAURI_SIGNING_PRIVATE_KEY = readFileSync(keyFile, "utf8");
 }
 env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ??= "";
+// Wbudowany klient OAuth Google (logowanie do Gmaila jednym kliknięciem), czytany przez build.rs.
+const googleFile = join(homedir(), ".tauri", "pdf-workbench-google.json");
+if (!env.PDFWB_GOOGLE_CLIENT_ID && !existsSync(googleFile) && env.PDFWB_ALLOW_NO_GOOGLE !== "1") {
+  throw new Error(`Brak klienta OAuth Google: ${googleFile} (albo PDFWB_GOOGLE_CLIENT_ID/SECRET). Wydanie bez logowania do Gmaila: PDFWB_ALLOW_NO_GOOGLE=1.`);
+}
 env.PATH = `${join(homedir(), ".cargo", "bin")}${process.platform === "win32" ? ";" : ":"}${env.PATH}`;
 
 execSync("npm run tauri build", { stdio: "inherit", env });

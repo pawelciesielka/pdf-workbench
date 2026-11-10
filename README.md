@@ -44,6 +44,7 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
 - Przestrzenie robocze: Rozmowy o kilku Dokumentach naraz.
 - OCR skanów (wbudowany w Windows), Redakcja i Korekta (ADR 0003), Porównanie wersji z podsumowaniem w czacie.
 - Podpis elektroniczny PAdES (ADR 0005) certyfikatem z magazynu Windows, np. kwalifikowanym z SimplySign Desktop: widoczny lub niewidoczny, ze znacznikiem czasu Certum. Długoterminowa weryfikacja (PAdES-LTA), sprawdzanie zaufania (łańcuch, unieważnienie, unijna lista zaufanych) i podpisywanie wielu plików naraz. Podpisane dokumenty mają zablokowaną edycję, którą można świadomie odblokować.
+- Poczta do podpisu (ADR 0006): maile z PDF-ami z Gmaila, podpis wszystkich załączników naraz i szkice „Odpowiedz wszystkim” z podpisanymi plikami w tym samym wątku. Logowanie jednym kliknięciem przez klienta OAuth wkompilowanego przy budowaniu z `%USERPROFILE%\.tauri\pdf-workbench-google.json` (JSON klienta „Aplikacja komputerowa” z Google Cloud, z włączonym Gmail API) albo ze zmiennych `PDFWB_GOOGLE_CLIENT_ID`/`PDFWB_GOOGLE_CLIENT_SECRET`.
 
 ## Struktura
 
@@ -60,7 +61,8 @@ PDF testowe: `python scripts/make-sample-pdf.py samples/umowa-testowa.pdf`; `sam
     - `signing/trust.rs`: zaufanie: łańcuch Windows, unieważnienie, unijna lista zaufanych
   - `ocr.rs`: Windows.Media.Ocr
   - `db.rs`: SQLite (migracje), indeks FTS5
-  - `keys.rs`: klucz API w Menedżerze poświadczeń Windows
+  - `gmail.rs`: Gmail API: logowanie OAuth (pętla zwrotna + PKCE), lista maili, załączniki, szkic odpowiedzi
+  - `keys.rs`: klucz API i tokeny Google w Menedżerze poświadczeń Windows
 
 ## Licencja
 

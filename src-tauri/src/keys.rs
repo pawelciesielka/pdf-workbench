@@ -18,6 +18,22 @@ pub fn clear() -> Result<(), String> {
     }
 }
 
+/// Dowolny sekret aplikacji w Menedżerze poświadczeń (np. tokeny Google); None — brak.
+pub fn get_named(account: &str) -> Option<String> {
+    keyring::Entry::new(SERVICE, account).ok()?.get_password().ok().filter(|s| !s.is_empty())
+}
+
+pub fn set_named(account: &str, value: &str) -> Result<(), String> {
+    keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())?.set_password(value).map_err(|e| e.to_string())
+}
+
+pub fn clear_named(account: &str) -> Result<(), String> {
+    match keyring::Entry::new(SERVICE, account).map_err(|e| e.to_string())?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Zwraca (klucz, źródło) — źródło: "keyring" albo "env".
 pub fn load() -> Option<(String, &'static str)> {
     if let Ok(e) = entry() {

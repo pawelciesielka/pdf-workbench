@@ -281,7 +281,51 @@ export const api = {
   setApiKey: (key: string) => invoke<void>("set_api_key", { key }),
   clearApiKey: () => invoke<void>("clear_api_key"),
   getInitialFiles: () => invoke<string[]>("get_initial_files"),
+  gmailStatus: () => invoke<GmailStatus>("gmail_status"),
+  gmailSetClient: (clientId: string, clientSecret: string) => invoke<void>("gmail_set_client", { clientId, clientSecret }),
+  gmailLoadClientFile: (path: string) => invoke<void>("gmail_load_client_file", { path }),
+  gmailClearClient: () => invoke<void>("gmail_clear_client"),
+  gmailConnect: () => invoke<string>("gmail_connect"),
+  gmailDisconnect: () => invoke<void>("gmail_disconnect"),
+  gmailSetOptions: (query: string, doneLabel: string) => invoke<void>("gmail_set_options", { query, doneLabel }),
+  gmailList: () => invoke<MailItem[]>("gmail_list"),
+  gmailDownload: (id: string, partIds: string[]) => invoke<string[]>("gmail_download", { id, partIds }),
+  gmailReplyDraft: (id: string, files: string[], text: string) => invoke<DraftResult>("gmail_reply_draft", { id, files, text }),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
 };
+
+export interface GmailStatus {
+  builtin: boolean;
+  clientId: string | null;
+  hasSecret: boolean;
+  email: string | null;
+  connected: boolean;
+  query: string;
+  doneLabel: string;
+  folder: string;
+}
+
+export interface MailItem {
+  id: string;
+  threadId: string;
+  from: string;
+  to: string;
+  cc: string;
+  subject: string;
+  date: number;
+  snippet: string;
+  unread: boolean;
+  attachments: { partId: string; filename: string; size: number }[];
+}
+
+export interface DraftResult {
+  draftId: string;
+  messageId: string;
+  to: string[];
+  cc: string[];
+  url: string;
+  labelWarning: string | null;
+}
 
 export function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e);

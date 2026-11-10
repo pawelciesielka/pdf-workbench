@@ -1620,3 +1620,118 @@ button.danger:hover:not(:disabled) {
   z-index: 65;
   max-width: calc(100% - 40px);
 }
+
+/* Poczta do podpisu */
+.mail-modal {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.mail-setup ol {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+  line-height: 1.6;
+}
+.mail-setup details {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mail-account {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mail-actions {
+  display: flex;
+  gap: 12px;
+}
+.mail-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mail-options textarea {
+  font: inherit;
+  resize: vertical;
+}
+.mail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.mail-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.mail-item.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.mail-item .mail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+  margin: 0;
+}
+.mail-item.unread .mail-from,
+.mail-item.unread .mail-subject {
+  font-weight: 600;
+}
+.mail-from {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-date,
+.mail-snippet,
+.mail-file small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mail-subject {
+  margin: 2px 0 0 26px;
+}
+.mail-snippet {
+  margin-left: 26px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mail-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 4px 0 0 26px;
+}
+.mail-item label.mail-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 400;
+  margin: 0;
+}
+.mail-login {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.google-btn b {
+  font-family: "Segoe UI", sans-serif;
+  margin-right: 6px;
+}
+.mail-setup .advanced {
+  margin-top: 6px;
+  font-size: 12px;
+}

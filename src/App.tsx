@@ -7,7 +7,8 @@ import { DocumentView, type DocumentViewHandle } from "./components/DocumentView
 import { SettingsDialog, type Theme } from "./components/SettingsDialog";
 import { UpdateBanner, useUpdates } from "./components/Updates";
 import { BatchSign } from "./components/Signing";
-import type { Placement } from "./lib/api";
+import { MailDialog } from "./components/Mail";
+import type { BatchItem, Placement } from "./lib/api";
 import { StartScreen } from "./components/StartScreen";
 import { WorkspaceDialog, WorkspaceView } from "./components/Workspaces";
 import { t } from "./i18n";
@@ -37,6 +38,9 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   /** Pliki wybrane do podpisania naraz. */
   const [batchFiles, setBatchFiles] = useState<string[] | null>(null);
+  /** Okno Poczty do podpisu i podpis zlecony z niego (wynik wraca do okna Poczty). */
+  const [showMail, setShowMail] = useState(false);
+  const [mailSign, setMailSign] = useState<{ files: string[]; resolve(items: BatchItem[] | null): void } | null>(null);
   /** Wskazywanie miejsc podpisu w kolejnych plikach (otwieranych w kartach edytora). */
   const [placeSession, setPlaceSession] = useState<{
     files: string[];
@@ -354,6 +358,9 @@ export default function App() {
             ＋
           </button>
         </div>
+        <button className="icon-btn" title={t("mail.menu")} onClick={() => setShowMail(true)}>
+          📨
+        </button>
         <button className="icon-btn" title={t("sign.batchMenu")} onClick={startBatchSign}>
           ✍
         </button>
@@ -369,7 +376,7 @@ export default function App() {
       </div>
 
       <main className="content">
-        {tabs.length === 0 && <StartScreen onOpen={(p) => openPaths([p])} onPick={pickFiles} onWorkspaces={() => setWsDialog({ editing: null })} />}
+        {tabs.length === 0 && <StartScreen onOpen={(p) => openPaths([p])} onPick={pickFiles} onWorkspaces={() => setWsDialog({ editing: null })} onMail={() => setShowMail(true)} />}
         {tabs.map((tab) =>
           tab.kind === "document" ? (
             <DocumentView
@@ -424,6 +431,31 @@ export default function App() {
         <SettingsDialog settings={settings} updates={updates} theme={theme} onTheme={setTheme} onChanged={refreshSettings} onClose={() => setShowSettings(false)} />
       )}
       {batchFiles && <BatchSign files={batchFiles} onClose={() => setBatchFiles(null)} onOpen={(p) => openPaths([p])} placeInEditor={placeInEditor} />}
+      {showMail && (
+        <MailDialog
+          hidden={!!mailSign}
+          onClose={() => setShowMail(false)}
+          sign={(files) => new Promise((resolve) => setMailSign({ files, resolve }))}
+        />
+      )}
+      {mailSign && (
+        <BatchSign
+          files={mailSign.files}
+          onClose={() => {
+            mailSign.resolve(null);
+            setMailSign(null);
+          }}
+          onOpen={(p) => openPaths([p])}
+          placeInEditor={placeInEditor}
+          next={{
+            label: t("mail.nextDrafts"),
+            onNext: (items) => {
+              mailSign.resolve(items);
+              setMailSign(null);
+            },
+          }}
+        />
+      )}
       {wsDialog && <WorkspaceDialog openDocs={docTabs.map((d) => d.info)} editing={wsDialog.editing} onOpen={openWorkspace} onClose={() => setWsDialog(null)} />}
     </div>
   );
