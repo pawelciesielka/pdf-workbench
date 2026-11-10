@@ -223,13 +223,15 @@ textarea:focus {
 .start {
   flex: 1;
   display: flex;
-  align-items: center;
+  /* Wyśrodkowanie przez margin: auto na karcie — gdy karta jest wyższa niż okno, zaczyna się od góry i da się ją przewinąć. */
+  align-items: flex-start;
   justify-content: center;
   overflow: auto;
   padding: 24px 16px;
 }
 .start-card {
   width: min(560px, 100%);
+  margin: auto;
   text-align: center;
 }
 .start-icon {
