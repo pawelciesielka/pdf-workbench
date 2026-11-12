@@ -866,6 +866,37 @@ fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+const WINDOW_STATE: tauri_plugin_window_state::StateFlags = tauri_plugin_window_state::StateFlags::SIZE
+    .union(tauri_plugin_window_state::StateFlags::POSITION)
+    .union(tauri_plugin_window_state::StateFlags::MAXIMIZED);
+
+/// Okno mieści się w obszarze roboczym ekranu (bez paska zadań): zmniejszamy je, gdy jest
+/// większe od ekranu, i przesuwamy, gdy wystaje poza ekran (np. po odłączeniu monitora).
+fn fit_to_screen(w: &tauri::WebviewWindow) -> tauri::Result<()> {
+    if w.is_maximized()? {
+        return Ok(());
+    }
+    let Some(monitor) = w.current_monitor()?.or(w.primary_monitor()?) else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let (outer, inner, pos) = (w.outer_size()?, w.inner_size()?, w.outer_position()?);
+    let width = outer.width.min(area.size.width);
+    let height = outer.height.min(area.size.height);
+    if (width, height) != (outer.width, outer.height) {
+        let (frame_w, frame_h) = (outer.width - inner.width, outer.height - inner.height);
+        w.set_size(tauri::PhysicalSize::new(width - frame_w, height - frame_h))?;
+    }
+    let max_x = area.position.x + (area.size.width - width) as i32;
+    let max_y = area.position.y + (area.size.height - height) as i32;
+    let x = pos.x.clamp(area.position.x, max_x);
+    let y = pos.y.clamp(area.position.y, max_y);
+    if (x, y) != (pos.x, pos.y) {
+        w.set_position(tauri::PhysicalPosition::new(x, y))?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -883,6 +914,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(navigation_guard())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(WINDOW_STATE)
+                .skip_initial_state("main")
+                .build(),
+        )
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -908,6 +945,13 @@ pub fn run() {
                 pending_tools: Mutex::new(HashMap::new()),
                 google_token: Mutex::new(None),
             });
+            // Okno startuje ukryte: najpierw ostatnia pozycja i rozmiar, potem dopasowanie do ekranu.
+            if let Some(w) = app.get_webview_window("main") {
+                use tauri_plugin_window_state::WindowExt;
+                let _ = w.restore_state(WINDOW_STATE);
+                let _ = fit_to_screen(&w);
+                let _ = w.show();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
