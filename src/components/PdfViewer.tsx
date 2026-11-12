@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Mark, Rect } from "../lib/editing";
 import { MARK_FONTS, newMarkId } from "../lib/editing";
-import type { EditOp, PageObject } from "../lib/api";
+import { api, type EditOp, type PageObject } from "../lib/api";
 import { loadViewerModule, pdfjsLib, type PDFDocumentProxy } from "../lib/pdf";
 import { ObjectLayer, type LayerGeom, type TextStyle } from "./ObjectLayer";
 
@@ -199,6 +199,17 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
         },
         { capture: true },
       );
+      // Linki do stron WWW w dokumencie otwieramy w domyślnej przeglądarce — także z Ctrl/Shift
+      // i środkowym przyciskiem, które w WebView otworzyłyby osobne okno bez menu.
+      const openExternalLink = (e: MouseEvent) => {
+        const a = (e.target as HTMLElement).closest?.<HTMLAnchorElement>(".annotationLayer a[href]");
+        if (!a || !/^(https?|mailto):/i.test(a.href)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.type === "click" || e.button === 1) api.openLink(a.href).catch(() => {});
+      };
+      containerRef.current.addEventListener("click", openExternalLink, { capture: true });
+      containerRef.current.addEventListener("auxclick", openExternalLink, { capture: true });
       // W trybie Obrazu pdf.js ignoruje kliknięcie w stronę (plik wybiera się jego osobnym przyciskiem
       // „Dodaj obraz”). U nas kliknięcie w puste miejsce otwiera wybór pliku i wstawia obraz w tym miejscu.
       containerRef.current.addEventListener("click", (e) => {

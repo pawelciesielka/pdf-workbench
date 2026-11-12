@@ -293,6 +293,7 @@ export const api = {
   gmailReplyDraft: (id: string, files: string[], text: string) => invoke<DraftResult>("gmail_reply_draft", { id, files, text }),
   gmailSendDraft: (draftId: string) => invoke<string>("gmail_send_draft", { draftId }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
+  openLink: (url: string) => invoke<void>("open_link", { url }),
 };
 
 export interface GmailStatus {

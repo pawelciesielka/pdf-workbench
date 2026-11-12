@@ -827,6 +827,45 @@ fn open_url(url: String) -> Res<()> {
     gmail::open_in_browser(&url)
 }
 
+/// Adres należy do samej aplikacji (interfejs w WebView), a nie do świata zewnętrznego.
+fn is_app_url(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" | "asset" | "ipc" | "about" | "blob" | "data" => true,
+        "http" | "https" => matches!(url.host_str(), Some("tauri.localhost" | "ipc.localhost" | "asset.localhost"))
+            || (cfg!(debug_assertions) && matches!(url.host_str(), Some("localhost" | "127.0.0.1"))),
+        _ => false,
+    }
+}
+
+/// Link z zewnątrz (np. kliknięty w PDF) — tylko http(s) i mailto, w domyślnej przeglądarce.
+fn open_external(url: &tauri::Url) -> Res<()> {
+    if !matches!(url.scheme(), "http" | "https" | "mailto") {
+        return Err("Ten rodzaj linku nie może być otwarty z programu.".into());
+    }
+    gmail::open_in_browser(url.as_str())
+}
+
+/// Otwiera link z dokumentu w domyślnej przeglądarce.
+#[tauri::command]
+fn open_link(url: String) -> Res<()> {
+    let url = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+    open_external(&url)
+}
+
+/// Okno programu nigdy nie przechodzi na obcą stronę (zniknęłoby menu i nie dałoby się wrócić):
+/// zewnętrzne linki trafiają do przeglądarki systemowej.
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("navigation-guard")
+        .on_navigation(|_webview, url| {
+            if is_app_url(url) {
+                return true;
+            }
+            let _ = open_external(url);
+            false
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -843,6 +882,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(navigation_guard())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -915,7 +955,8 @@ pub fn run() {
             gmail_download,
             gmail_reply_draft,
             gmail_send_draft,
-            open_url
+            open_url,
+            open_link
         ])
         .run(tauri::generate_context!())
         .expect("błąd uruchamiania PDF Workbench");
