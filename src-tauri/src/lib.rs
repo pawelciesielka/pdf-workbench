@@ -368,17 +368,7 @@ async fn sign_files(state: State<'_, AppState>, options: signing::BatchOptions, 
             let mut item = item.clone();
             // Wpis do dziennika od razu po każdym pliku; błąd dziennika nie psuje podpisu.
             if let (Some(dir), Some(output)) = (&log_dir, &item.output) {
-                let s = &options.sign;
-                let entry = signing::log::LogEntry {
-                    source: item.path.clone(),
-                    output: output.clone(),
-                    cert_id: s.cert_id.clone(),
-                    signing_time: s.signing_time.clone(),
-                    level: item.level.map(str::to_string),
-                    reason: s.reason.clone(),
-                    location: s.location.clone(),
-                    warning: item.warning.clone(),
-                };
+                let entry = signing::log::LogEntry { output: output.clone(), signing_time: options.sign.signing_time.clone() };
                 if let Err(e) = signing::log::append(dir, &[entry]) {
                     item.warning = Some(item.warning.map(|w| format!("{w} ")).unwrap_or_default() + &e);
                 }

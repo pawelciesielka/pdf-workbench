@@ -288,16 +288,7 @@ export const api = {
   setSignOverwrite: (value: boolean) => invoke<void>("set_sign_overwrite", { value }),
   setSignLogDir: (dir: string | null) => invoke<void>("set_sign_log_dir", { dir }),
   /** Wpis do dziennika podpisów (nic, gdy dziennik wyłączony). */
-  logSignature: (entry: {
-    source: string;
-    output: string;
-    certId: string;
-    signingTime: string;
-    level: string | null;
-    reason?: string;
-    location?: string;
-    warning: string | null;
-  }) => invoke<void>("log_signature", { entry }),
+  logSignature: (entry: { output: string; signingTime: string }) => invoke<void>("log_signature", { entry }),
   setModel: (model: string) => invoke<void>("set_model", { model }),
   setApiKey: (key: string) => invoke<void>("set_api_key", { key }),
   clearApiKey: () => invoke<void>("clear_api_key"),

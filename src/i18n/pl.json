@@ -80,7 +80,7 @@
   "settings.signLogPick": "Wybierz folder…",
   "settings.signLogOpen": "Pokaż dziennik",
   "settings.signLogDisable": "Wyłącz",
-  "settings.signLogHint": "Po każdym podpisie do pliku dziennik-podpisow.md w tym folderze dopisywany jest wpis: data, ścieżka pliku, podpisujący, poziom podpisu, rozmiar, liczba stron i skrót SHA-256.",
+  "settings.signLogHint": "Po każdym podpisie do pliku dziennik-podpisow.md w tym folderze dopisywana jest linia z datą podpisu i ścieżką podpisanego pliku.",
   "error.open": "Nie udało się otworzyć pliku",
   "loading": "Wczytywanie…",
   "tabs.closeDirty": "Ten Dokument ma niezapisane zmiany. Zamknąć bez zapisywania?",

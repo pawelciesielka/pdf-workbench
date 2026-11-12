@@ -458,16 +458,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
       }
       if (report.warning) props.onToast(report.warning, "error");
       await api
-        .logSignature({
-          source: info.path,
-          output: res.document.path,
-          certId: choice.cert.id,
-          signingTime,
-          level: report.level,
-          reason: choice.reason || undefined,
-          location: choice.location || undefined,
-          warning: report.warning ?? null,
-        })
+        .logSignature({ output: res.document.path, signingTime })
         .catch((e) => props.onToast(errorText(e), "error"));
     } catch (e) {
       props.onToast(errorText(e));
