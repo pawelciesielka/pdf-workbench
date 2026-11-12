@@ -1,6 +1,6 @@
 [package]
 name = "pdf-workbench"
-version = "0.3.8"
+version = "0.3.9"
 description = "PDF Workbench"
 license = "MIT"
 edition = "2021"
