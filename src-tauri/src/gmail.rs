@@ -21,7 +21,7 @@ const UPLOAD_API: &str = "https://gmail.googleapis.com/upload/gmail/v1/users/me"
 const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
 pub const KEY_SECRET: &str = "google-client-secret";
 pub const KEY_REFRESH: &str = "google-refresh-token";
-pub const DEFAULT_QUERY: &str = "in:inbox has:attachment filename:pdf -label:podpisane newer_than:60d";
+pub const DEFAULT_QUERY: &str = "in:inbox has:attachment filename:pdf -label:podpisane newer_than:7d";
 pub const DONE_LABEL: &str = "Podpisane";
 const MAX_LIST: usize = 30;
 /// Powyżej tej wielkości wiadomość idzie przez endpoint wysyłania plików zamiast pola `raw`.

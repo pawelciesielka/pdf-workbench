@@ -234,8 +234,13 @@ export function MailDialog(props: {
   return (
     <div className="modal-backdrop" onMouseDown={busy ? undefined : props.onClose}>
       <div className="modal mail-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>📨 {t("mail.title")}</h2>
-        {error && <div className="banner error">{error}</div>}
+        <div className="mail-titlebar">
+          <h2>📨 {t("mail.title")}</h2>
+          <button disabled={!!busy} onClick={props.onClose}>
+            {t("common.close")}
+          </button>
+        </div>
+        {error &&<div className="banner error">{error}</div>}
 
         {!status && <p className="hint">{t("mail.loading")}</p>}
 
@@ -448,12 +453,6 @@ export function MailDialog(props: {
         )}
 
         {busy && <p className="hint">⏳ {busy}</p>}
-
-        <div className="modal-footer">
-          <button disabled={!!busy} onClick={props.onClose}>
-            {t("common.close")}
-          </button>
-        </div>
       </div>
     </div>
   );

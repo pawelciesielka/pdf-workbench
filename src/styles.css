@@ -1632,6 +1632,24 @@ button.danger:hover:not(:disabled) {
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
+/* Tytuł z przyciskiem Zamknij zostaje na górze także przy przewijaniu długiej listy. */
+.mail-titlebar {
+  position: sticky;
+  top: -20px;
+  z-index: 3;
+  box-sizing: border-box;
+  height: 64px; /* przy przewinięciu widać ok. 40 px — pod nim przykleja się .mail-toolbar */
+  margin: -20px -24px 0;
+  padding: 20px 24px 8px;
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mail-titlebar h2 {
+  margin: 0;
+}
 .mail-setup ol {
   margin: 4px 0 12px;
   padding-left: 20px;
@@ -1752,7 +1770,7 @@ button.danger:hover:not(:disabled) {
 }
 .mail-toolbar {
   position: sticky;
-  top: -20px;
+  top: 40px;
   z-index: 2;
   display: flex;
   align-items: center;
