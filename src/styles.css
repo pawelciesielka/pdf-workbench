@@ -409,6 +409,9 @@ textarea:focus {
   position: absolute;
   inset: 0;
   overflow: auto;
+  /* pdf.js nadaje adnotacjom (linkom) z-index według kolejności w dokumencie — w długich PDF-ach
+     ponad 50, czyli nad oknami dialogowymi. Własny kontekst nakładania trzyma je w podglądzie. */
+  isolation: isolate;
 }
 .pdfViewer .page {
   margin: 12px auto;
