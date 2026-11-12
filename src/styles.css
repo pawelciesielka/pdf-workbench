@@ -1815,3 +1815,9 @@ button.danger:hover:not(:disabled) {
   margin-left: 2px;
   border: none;
 }
+
+/* Ustawienia urosły — przewijane na niskich ekranach. */
+.settings-modal {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}

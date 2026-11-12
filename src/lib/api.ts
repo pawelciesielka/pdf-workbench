@@ -110,6 +110,10 @@ export interface Settings {
   model: string;
   models: string[];
   apiKeySource: "keyring" | "env" | null;
+  /** Podpis nadpisuje podpisywany plik zamiast tworzyć „… (podpisany).pdf”. */
+  signOverwrite: boolean;
+  /** Folder dziennika podpisów (dziennik-podpisow.md); null — wyłączony. */
+  signLogDir: string | null;
 }
 
 export interface OcrLine {
@@ -248,7 +252,7 @@ export const api = {
   simplySignForget: () => invoke<void>("simplysign_forget"),
   signPdf: (data: Uint8Array, o: SignOptions) => rawInvoke<ArrayBuffer>("sign_pdf", data, o).then((b) => unpackReport<SignReport>(b)),
   signatureTrust: (data: Uint8Array) => rawInvoke<TrustInfo[]>("signature_trust", data, null),
-  signFiles: (options: { paths: string[]; sign: SignOptions; visibleLines: string[] | null; placements: (Placement | null)[] }, onProgress: (index: number, item: BatchItem) => void) => {
+  signFiles: (options: { paths: string[]; sign: SignOptions; visibleLines: string[] | null; placements: (Placement | null)[]; overwrite: boolean }, onProgress: (index: number, item: BatchItem) => void) => {
     const channel = new Channel<{ index: number; item: BatchItem }>();
     channel.onmessage = (m) => onProgress(m.index, m.item);
     return invoke<BatchItem[]>("sign_files", { options, onProgress: channel });
@@ -281,6 +285,19 @@ export const api = {
   saveWorkspace: (id: number | null, name: string, hashes: string[]) => invoke<WorkspaceInfo>("save_workspace", { id, name, hashes }),
   deleteWorkspace: (id: number) => invoke<void>("delete_workspace", { id }),
   getSettings: () => invoke<Settings>("get_settings"),
+  setSignOverwrite: (value: boolean) => invoke<void>("set_sign_overwrite", { value }),
+  setSignLogDir: (dir: string | null) => invoke<void>("set_sign_log_dir", { dir }),
+  /** Wpis do dziennika podpisów (nic, gdy dziennik wyłączony). */
+  logSignature: (entry: {
+    source: string;
+    output: string;
+    certId: string;
+    signingTime: string;
+    level: string | null;
+    reason?: string;
+    location?: string;
+    warning: string | null;
+  }) => invoke<void>("log_signature", { entry }),
   setModel: (model: string) => invoke<void>("set_model", { model }),
   setApiKey: (key: string) => invoke<void>("set_api_key", { key }),
   clearApiKey: () => invoke<void>("clear_api_key"),

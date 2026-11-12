@@ -361,10 +361,29 @@ struct BatchProgress {
 
 /// Podpisanie wielu plików jednym certyfikatem; postęp na kanale po każdym pliku.
 #[tauri::command]
-async fn sign_files(options: signing::BatchOptions, on_progress: Channel<BatchProgress>) -> Res<Vec<signing::BatchItem>> {
+async fn sign_files(state: State<'_, AppState>, options: signing::BatchOptions, on_progress: Channel<BatchProgress>) -> Res<Vec<signing::BatchItem>> {
+    let log_dir = sign_log_dir(&state.db.lock().unwrap());
     tokio::task::spawn_blocking(move || {
         signing::sign_files(&options, |index, item| {
-            let _ = on_progress.send(BatchProgress { index, item: item.clone() });
+            let mut item = item.clone();
+            // Wpis do dziennika od razu po każdym pliku; błąd dziennika nie psuje podpisu.
+            if let (Some(dir), Some(output)) = (&log_dir, &item.output) {
+                let s = &options.sign;
+                let entry = signing::log::LogEntry {
+                    source: item.path.clone(),
+                    output: output.clone(),
+                    cert_id: s.cert_id.clone(),
+                    signing_time: s.signing_time.clone(),
+                    level: item.level.map(str::to_string),
+                    reason: s.reason.clone(),
+                    location: s.location.clone(),
+                    warning: item.warning.clone(),
+                };
+                if let Err(e) = signing::log::append(dir, &[entry]) {
+                    item.warning = Some(item.warning.map(|w| format!("{w} ")).unwrap_or_default() + &e);
+                }
+            }
+            let _ = on_progress.send(BatchProgress { index, item });
         })
     })
     .await
@@ -616,6 +635,10 @@ struct Settings {
     model: String,
     models: Vec<String>,
     api_key_source: Option<String>,
+    /// Podpis nadpisuje podpisywany plik zamiast tworzyć „… (podpisany).pdf”.
+    sign_overwrite: bool,
+    /// Folder dziennika podpisów (`dziennik-podpisow.md`); brak — dziennik wyłączony.
+    sign_log_dir: Option<String>,
 }
 
 #[tauri::command]
@@ -625,7 +648,32 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
         model: db::get_setting(&conn, "model").unwrap_or_else(|| chat::DEFAULT_MODEL.to_string()),
         models: chat::MODELS.iter().map(|m| m.to_string()).collect(),
         api_key_source: keys::load().map(|(_, s)| s.to_string()),
+        sign_overwrite: db::get_setting(&conn, "signOverwrite").as_deref() == Some("1"),
+        sign_log_dir: sign_log_dir(&conn),
     }
+}
+
+fn sign_log_dir(conn: &rusqlite::Connection) -> Option<String> {
+    db::get_setting(conn, "signLogDir").filter(|d| !d.trim().is_empty())
+}
+
+#[tauri::command]
+fn set_sign_log_dir(state: State<'_, AppState>, dir: Option<String>) -> Res<()> {
+    let conn = state.db.lock().unwrap();
+    db::set_setting(&conn, "signLogDir", dir.as_deref().unwrap_or("")).map_err(err)
+}
+
+/// Wpis do dziennika podpisów po podpisaniu otwartego dokumentu (nic, gdy dziennik wyłączony).
+#[tauri::command]
+async fn log_signature(state: State<'_, AppState>, entry: signing::log::LogEntry) -> Res<()> {
+    let Some(dir) = sign_log_dir(&state.db.lock().unwrap()) else { return Ok(()) };
+    tokio::task::spawn_blocking(move || signing::log::append(&dir, &[entry])).await.map_err(err)?
+}
+
+#[tauri::command]
+fn set_sign_overwrite(state: State<'_, AppState>, value: bool) -> Res<()> {
+    let conn = state.db.lock().unwrap();
+    db::set_setting(&conn, "signOverwrite", if value { "1" } else { "0" }).map_err(err)
 }
 
 #[tauri::command]
@@ -1016,6 +1064,9 @@ pub fn run() {
             save_workspace,
             delete_workspace,
             get_settings,
+            set_sign_overwrite,
+            set_sign_log_dir,
+            log_signature,
             set_model,
             set_api_key,
             clear_api_key,

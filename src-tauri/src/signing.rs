@@ -18,6 +18,7 @@ use windows::Win32::Security::Cryptography::*;
 type Res<T> = Result<T, String>;
 
 pub mod card;
+pub mod log;
 mod ltv;
 pub mod trust;
 pub use trust::{issuer_countries, check_trust, TrustInfo};
@@ -1298,6 +1299,9 @@ pub struct BatchOptions {
     /// ostatniej strony. Strona dalej niż koniec dokumentu oznacza ostatnią.
     #[serde(default)]
     pub placements: Vec<Option<Placement>>,
+    /// Podpisany plik zastępuje oryginał zamiast trafić obok jako „… (podpisany).pdf”.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Deserialize, Clone)]
@@ -1329,6 +1333,17 @@ fn output_path(path: &str) -> String {
         }
         n += 1;
     }
+}
+
+/// Zastępuje plik nową treścią: zapis do pliku tymczasowego obok i podmiana, żeby przerwany zapis
+/// nie zostawił uszkodzonego oryginału.
+fn replace_file(path: &str, data: &[u8]) -> Res<()> {
+    let tmp = format!("{path}.podpis.tmp");
+    std::fs::write(&tmp, data).map_err(|e| format!("Nie można zapisać pliku: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Nie można zastąpić pliku (czy jest otwarty w innym programie?): {e}")
+    })
 }
 
 /// Podpisuje wiele plików jednym certyfikatem (klucz pobierany raz). Wynik każdego pliku
@@ -1365,8 +1380,11 @@ fn sign_files_with(o: &BatchOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>], 
                 opts.visible = Some(Visible { page, rect, lines: lines.clone() });
             }
             let (out, report) = sign_full(&bytes, &opts, cert, key, chain)?;
-            let target = output_path(path);
-            std::fs::write(&target, &out).map_err(|e| format!("Nie można zapisać pliku: {e}"))?;
+            let target = if o.overwrite { replace_file(path, &out)?; path.clone() } else {
+                let target = output_path(path);
+                std::fs::write(&target, &out).map_err(|e| format!("Nie można zapisać pliku: {e}"))?;
+                target
+            };
             Ok(BatchItem { path: path.clone(), output: Some(target), level: Some(report.level), warning: report.warning, error: None })
         })()
         .unwrap_or_else(|e| BatchItem { path: path.clone(), output: None, level: None, warning: None, error: Some(e) });
@@ -1546,6 +1564,7 @@ mod tests {
             sign: SignOptions { visible: None, ..opts(1, false) },
             visible_lines: Some(vec!["Podpisany elektronicznie przez:".into(), "Test".into()]),
             placements: vec![None, Some(Placement { page: 99, rect: [50.0, 50.0, 250.0, 110.0] })],
+            overwrite: false,
         };
         let mut seen = Vec::new();
         let r = sign_files_with(&o, &cert, &key, &[], |i, _| seen.push(i)).unwrap();
@@ -1570,6 +1589,28 @@ mod tests {
         // Kolejny podpis tego samego pliku nie nadpisuje poprzedniej kopii.
         let again = sign_files_with(&BatchOptions { paths: o.paths[..1].to_vec(), ..o }, &cert, &key, &[], |_, _| {}).unwrap();
         assert!(again[0].output.as_ref().unwrap().ends_with(" (podpisany 2).pdf"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_overwrite_replaces_original() {
+        let (cert, key) = ephemeral();
+        let dir = std::env::temp_dir().join(format!("pdfwb-overwrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("umowa-testowa.pdf");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/umowa-testowa.pdf"), &path).unwrap();
+        let p = path.to_string_lossy().to_string();
+        let o = BatchOptions { paths: vec![p.clone()], sign: opts(1, false), visible_lines: None, placements: vec![], overwrite: true };
+        let r = sign_files_with(&o, &cert, &key, &[], |_, _| {}).unwrap();
+        assert_eq!(r[0].output.as_deref(), Some(p.as_str()), "{:?}", r[0].error);
+        let s = inspect(&std::fs::read(&path).unwrap());
+        assert!(s.len() == 1 && s[0].intact && s[0].covers_whole);
+        // Drugi podpis tego samego pliku dopisuje się, pierwszy zostaje ważny.
+        sign_files_with(&o, &cert, &key, &[], |_, _| {}).unwrap();
+        let s = inspect(&std::fs::read(&path).unwrap());
+        assert!(s.len() == 2 && s.iter().all(|x| x.intact));
+        // Tylko oryginał, bez kopii ani plików tymczasowych.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

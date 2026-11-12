@@ -449,6 +449,7 @@ export default function App() {
       {mailSign && (
         <BatchSign
           files={mailSign.files}
+          keepOriginals
           onClose={() => {
             mailSign.resolve(null);
             setMailSign(null);

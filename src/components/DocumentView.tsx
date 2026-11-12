@@ -425,20 +425,24 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const signDocument = async (choice: SignChoice, place?: { page: number; rect: Rect }) => {
     const d = docRef.current;
     if (!d) return;
-    const target = await saveDialog({
-      title: t("sign.saveTitle"),
-      defaultPath: info.path.replace(/\.pdf$/i, " (podpisany).pdf"),
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
+    const overwrite = await api.getSettings().then((s) => s.signOverwrite, () => false);
+    const target = overwrite
+      ? info.path
+      : await saveDialog({
+          title: t("sign.saveTitle"),
+          defaultPath: info.path.replace(/\.pdf$/i, " (podpisany).pdf"),
+          filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
     if (!target) return;
     setBusy(t("sign.signing"));
     try {
       const source = dirty || !diskBytes.current ? await d.saveDocument() : diskBytes.current;
       const now = new Date();
       const lines = visibleLines(choice.cert, choice.reason, now);
+      const signingTime = pdfDate(now);
       const { data: signed, report } = await api.signPdf(source, {
         certId: choice.cert.id,
-        signingTime: pdfDate(now),
+        signingTime,
         reason: choice.reason || undefined,
         location: choice.location || undefined,
         timestamp: choice.timestamp,
@@ -453,6 +457,18 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         props.onToast(`${t("sign.doneNew", { name: res.document.name })} ${level}`, "info");
       }
       if (report.warning) props.onToast(report.warning, "error");
+      await api
+        .logSignature({
+          source: info.path,
+          output: res.document.path,
+          certId: choice.cert.id,
+          signingTime,
+          level: report.level,
+          reason: choice.reason || undefined,
+          location: choice.location || undefined,
+          warning: report.warning ?? null,
+        })
+        .catch((e) => props.onToast(errorText(e), "error"));
     } catch (e) {
       props.onToast(errorText(e));
     } finally {

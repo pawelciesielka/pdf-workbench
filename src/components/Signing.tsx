@@ -287,7 +287,10 @@ export function BatchSign(props: {
   placeInEditor(files: string[]): Promise<(Placement | null)[] | null>;
   /** Dalszy krok po podpisaniu (np. odpowiedzi w Gmailu); zastępuje „Zamknij”. */
   next?: { label: string; onNext(items: BatchItem[]): void };
+  /** Zawsze kopie „… (podpisany).pdf”, niezależnie od ustawienia nadpisywania (np. poczta). */
+  keepOriginals?: boolean;
 }) {
+  const [overwrite, setOverwrite] = useState(false);
   const [items, setItems] = useState<(BatchItem | null)[] | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -307,6 +310,8 @@ export function BatchSign(props: {
     setItems(props.files.map(() => null));
     setRunning(true);
     const now = new Date();
+    const ow = !props.keepOriginals && (await api.getSettings().then((s) => s.signOverwrite, () => false));
+    setOverwrite(ow);
     try {
       await api.signFiles(
         {
@@ -314,6 +319,7 @@ export function BatchSign(props: {
           sign: { certId: c.cert.id, signingTime: pdfDate(now), reason: c.reason || undefined, location: c.location || undefined, timestamp: c.timestamp, ltv: c.ltv },
           visibleLines: c.visible ? visibleLines(c.cert, c.reason, now) : null,
           placements,
+          overwrite: ow,
         },
         (index, item) => setItems((cur) => (cur ? cur.map((x, i) => (i === index ? item : x)) : cur)),
       );
@@ -333,7 +339,9 @@ export function BatchSign(props: {
       <div className="modal sign-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>✍ {t("sign.batchTitle", { n: props.files.length })}</h2>
         <p className="hint">
-          {running ? t("sign.batchRunning", { done, total: props.files.length }) : t("sign.batchDone", { ok: done - failed, failed })}
+          {running
+            ? t(overwrite ? "sign.batchRunningOverwrite" : "sign.batchRunning", { done, total: props.files.length })
+            : t(overwrite ? "sign.batchDoneOverwrite" : "sign.batchDone", { ok: done - failed, failed })}
         </p>
         {error && <div className="banner error">{error}</div>}
         <div className="sig-list">

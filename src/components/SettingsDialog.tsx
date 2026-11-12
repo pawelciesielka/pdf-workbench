@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
 import { UpdateSettings, type Updates } from "./Updates";
 import { MODEL_LABELS, t } from "../i18n";
@@ -48,7 +49,7 @@ export function SettingsDialog({ settings, updates, theme, onTheme, onChanged, o
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal settings-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>{t("settings.title")}</h2>
 
         <label>{t("settings.apiKey")}</label>
@@ -87,6 +88,55 @@ export function SettingsDialog({ settings, updates, theme, onTheme, onChanged, o
             </button>
           ))}
         </div>
+
+        <label>{t("settings.signing")}</label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.signOverwrite}
+            onChange={async (e) => {
+              await api.setSignOverwrite(e.target.checked);
+              onChanged();
+            }}
+          />
+          {t("settings.signOverwrite")}
+        </label>
+        <p className="hint">{t("settings.signOverwriteHint")}</p>
+
+        <label>{t("settings.signLog")}</label>
+        <div className="row">
+          <input readOnly value={settings.signLogDir ?? t("settings.signLogOff")} title={settings.signLogDir ?? ""} />
+          <button
+            onClick={async () => {
+              const dir = await openDialog({ directory: true, multiple: false, defaultPath: settings.signLogDir ?? undefined });
+              if (typeof dir !== "string") return;
+              await api.setSignLogDir(dir);
+              onChanged();
+            }}
+          >
+            {t("settings.signLogPick")}
+          </button>
+          {settings.signLogDir && (
+            <>
+              <button
+                onClick={() =>
+                  api.revealInExplorer(`${settings.signLogDir!.replace(/[\\/]+$/, "")}\\dziennik-podpisow.md`).catch(() => api.revealInExplorer(settings.signLogDir!)).catch((e) => setMsg(errorText(e)))
+                }
+              >
+                {t("settings.signLogOpen")}
+              </button>
+              <button
+                onClick={async () => {
+                  await api.setSignLogDir(null);
+                  onChanged();
+                }}
+              >
+                {t("settings.signLogDisable")}
+              </button>
+            </>
+          )}
+        </div>
+        <p className="hint">{t("settings.signLogHint")}</p>
 
         <UpdateSettings updates={updates} version={version} />
 
