@@ -238,10 +238,14 @@ const bytes = (b: ArrayBuffer) => new Uint8Array(b);
 export const api = {
   openDocument: (path: string) => invoke<DocumentInfo>("open_document", { path }),
   readDocument: (path: string) => invoke<ArrayBuffer>("read_document", { path }),
+  revealInExplorer: (path: string) => invoke<void>("reveal_in_explorer", { path }),
   saveDocument: (data: Uint8Array, meta: { path: string; parentHash: string | null; backup: boolean }) =>
     rawInvoke<{ document: DocumentInfo; backupPath: string | null }>("save_document", data, meta),
   signatures: (data: Uint8Array) => rawInvoke<SignatureInfo[]>("pdf_signatures", data, null),
   signingCerts: () => invoke<SigningCert[]>("signing_certs"),
+  /** Czy SimplySign Desktop działa i od kiedy (ms) PIN jest zapamiętany w tym procesie. */
+  simplySignStatus: () => invoke<{ running: boolean; pinSince: number | null }>("simplysign_status"),
+  simplySignForget: () => invoke<void>("simplysign_forget"),
   signPdf: (data: Uint8Array, o: SignOptions) => rawInvoke<ArrayBuffer>("sign_pdf", data, o).then((b) => unpackReport<SignReport>(b)),
   signatureTrust: (data: Uint8Array) => rawInvoke<TrustInfo[]>("signature_trust", data, null),
   signFiles: (options: { paths: string[]; sign: SignOptions; visibleLines: string[] | null; placements: (Placement | null)[] }, onProgress: (index: number, item: BatchItem) => void) => {

@@ -17,6 +17,7 @@ use windows::Win32::Security::Cryptography::*;
 
 type Res<T> = Result<T, String>;
 
+pub mod card;
 mod ltv;
 pub mod trust;
 pub use trust::{issuer_countries, check_trust, TrustInfo};
@@ -80,6 +81,21 @@ impl Cert {
             }
             let exts = std::slice::from_raw_parts(i.rgExtension, i.cExtension as usize);
             !CertFindExtension(PCSTR(OID_QC_STATEMENTS.as_ptr()), exts).is_null()
+        }
+    }
+    /// Klucz w SimplySign CSP/KSP — PIN może zostać zapamiętany w procesie (zob. `card`).
+    fn simplysign(&self) -> bool {
+        unsafe {
+            let mut n = 0u32;
+            if CertGetCertificateContextProperty(self.0, CERT_KEY_PROV_INFO_PROP_ID, None, &mut n).is_err() || n == 0 {
+                return false;
+            }
+            let mut buf = vec![0u64; (n as usize).div_ceil(8)];
+            if CertGetCertificateContextProperty(self.0, CERT_KEY_PROV_INFO_PROP_ID, Some(buf.as_mut_ptr() as *mut c_void), &mut n).is_err() {
+                return false;
+            }
+            let info = &*(buf.as_ptr() as *const CRYPT_KEY_PROV_INFO);
+            info.pwszProvName.to_string().is_ok_and(|p| p.contains("SimplySign"))
         }
     }
     fn has_private_key(&self) -> bool {
@@ -1234,7 +1250,11 @@ pub fn sign_pdf(bytes: &[u8], o: &SignOptions) -> Res<(Vec<u8>, SignReport)> {
     let cert = find_cert(&o.cert_id)?;
     let key = acquire_key(&cert)?;
     let chain = chain_certs(&cert);
-    sign_full(bytes, o, &cert, &key, &chain)
+    let res = sign_full(bytes, o, &cert, &key, &chain)?;
+    if cert.simplysign() {
+        card::mark_signed();
+    }
+    Ok(res)
 }
 
 /// Odpowiedź [u32 LE długość JSON][JSON][PDF].
@@ -1317,7 +1337,11 @@ pub fn sign_files(o: &BatchOptions, progress: impl FnMut(usize, &BatchItem)) -> 
     let cert = find_cert(&o.sign.cert_id)?;
     let key = acquire_key(&cert)?;
     let chain = chain_certs(&cert);
-    sign_files_with(o, &cert, &key, &chain, progress)
+    let res = sign_files_with(o, &cert, &key, &chain, progress)?;
+    if cert.simplysign() && res.iter().any(|r| r.error.is_none()) {
+        card::mark_signed();
+    }
+    Ok(res)
 }
 
 fn sign_files_with(o: &BatchOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>], mut progress: impl FnMut(usize, &BatchItem)) -> Res<Vec<BatchItem>> {

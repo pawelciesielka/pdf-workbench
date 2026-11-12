@@ -781,6 +781,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
           {menuOpen && (
             <div className="menu" onMouseLeave={() => setMenuOpen(false)}>
               <button onClick={() => (setMenuOpen(false), save(true))}>{t("edit.saveAs")}</button>
+              <button onClick={() => (setMenuOpen(false), api.revealInExplorer(info.path).catch((e) => props.onToast(errorText(e))))}>
+                {t("edit.reveal")}
+              </button>
               <hr />
               <button onClick={() => (setMenuOpen(false), setDialog("sign"))}>✍ {t("sign.menu")}</button>
               <button onClick={() => (setMenuOpen(false), props.onBatchSign())}>✍ {t("sign.batchMenu")}</button>

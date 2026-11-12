@@ -1789,3 +1789,29 @@ button.danger:hover:not(:disabled) {
   font-weight: 400;
   margin: 0;
 }
+
+/* Połączony SimplySign / karta w czytniku — PIN może być zapamiętany. */
+.card-session {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  background: var(--warn-soft);
+  color: var(--warn);
+  cursor: help;
+}
+.card-session button {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.card-session .card-dismiss {
+  margin-left: 2px;
+  border: none;
+}

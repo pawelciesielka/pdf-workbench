@@ -7,6 +7,7 @@ import { DocumentView, type DocumentViewHandle } from "./components/DocumentView
 import { SettingsDialog, type Theme } from "./components/SettingsDialog";
 import { UpdateBanner, useUpdates } from "./components/Updates";
 import { BatchSign } from "./components/Signing";
+import { CardSession, takeRestorePaths } from "./components/CardSession";
 import { MailDialog } from "./components/Mail";
 import type { BatchItem, Placement } from "./lib/api";
 import { StartScreen } from "./components/StartScreen";
@@ -197,8 +198,10 @@ export default function App() {
   useEffect(() => {
     if (!initialLoaded.current) {
       initialLoaded.current = true;
+      const restore = takeRestorePaths();
       api.getInitialFiles().then((f) => {
-        if (f.length) openPaths(f);
+        const all = [...restore, ...f.filter((p) => !restore.some((r) => r.toLowerCase() === p.toLowerCase()))];
+        if (all.length) openPaths(all);
       });
     }
     const unlistenOpen = listen<string[]>("open-files", (e) => openPaths(e.payload));
@@ -358,6 +361,11 @@ export default function App() {
             ＋
           </button>
         </div>
+        <CardSession
+          openPaths={() => tabsRef.current.flatMap((x) => (x.kind === "document" ? [x.info.path] : []))}
+          hasUnsaved={() => Object.values(dirtyRef.current).some(Boolean)}
+          onError={(text) => showToast(text)}
+        />
         <button className="icon-btn" title={t("mail.menu")} onClick={() => setShowMail(true)}>
           📨
         </button>

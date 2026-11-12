@@ -138,6 +138,23 @@ async fn open_document(state: State<'_, AppState>, path: String) -> Res<Document
     register_document(&state, &path, &bytes, None)
 }
 
+/// Otwiera Eksplorator Windows z zaznaczonym plikiem.
+#[tauri::command]
+fn reveal_in_explorer(path: String) -> Res<()> {
+    use std::os::windows::process::CommandExt;
+    let path = normalize_path(&path);
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("Plik nie istnieje: {path}"));
+    }
+    // Eksplorator nie rozumie argumentu „"/select,C:\a b.pdf"” w cudzysłowie, który dodałby
+    // Command::arg, więc składamy go ręcznie. Kod wyjścia explorer.exe jest bez znaczenia (zwykle 1).
+    std::process::Command::new("explorer.exe")
+        .raw_arg(format!("/select,\"{}\"", path.replace('/', "\\")))
+        .spawn()
+        .map_err(|e| format!("Nie można uruchomić Eksploratora: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn read_document(path: String) -> Res<Response> {
     let bytes = tokio::fs::read(&path).await.map_err(|e| format!("Nie można odczytać pliku: {e}"))?;
@@ -292,6 +309,18 @@ async fn pdf_signatures(request: Request<'_>) -> Res<Vec<signing::SignatureInfo>
 #[tauri::command]
 async fn signing_certs() -> Res<Vec<signing::SigningCert>> {
     tokio::task::spawn_blocking(signing::list_certs).await.map_err(err)?
+}
+
+/// Czy SimplySign Desktop działa i od kiedy PIN jest zapamiętany w tym procesie.
+#[tauri::command]
+fn simplysign_status() -> signing::card::SimplySignStatus {
+    signing::card::status()
+}
+
+/// Użytkownik rozłączył się w SimplySign Desktop — PIN został zapomniany.
+#[tauri::command]
+fn simplysign_forget() {
+    signing::card::forget();
 }
 
 #[tauri::command]
@@ -957,6 +986,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_document,
             read_document,
+            reveal_in_explorer,
+            simplysign_status,
+            simplysign_forget,
             save_document,
             rotate_pages,
             rasterize_pages,
