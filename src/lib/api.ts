@@ -114,6 +114,8 @@ export interface Settings {
   signOverwrite: boolean;
   /** Folder dziennika podpisów (dziennik-podpisow.md); null — wyłączony. */
   signLogDir: string | null;
+  /** Folder podpisanych dokumentów; null — podpisane pliki zostają obok oryginałów. */
+  signedDir: string | null;
 }
 
 export interface OcrLine {
@@ -287,6 +289,11 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSignOverwrite: (value: boolean) => invoke<void>("set_sign_overwrite", { value }),
   setSignLogDir: (dir: string | null) => invoke<void>("set_sign_log_dir", { dir }),
+  setSignedDir: (dir: string | null) => invoke<void>("set_signed_dir", { dir }),
+  /** Ścieżka zapisu podpisanego dokumentu (nadpisanie / kopia, z folderem podpisanych). */
+  signedTarget: (path: string, overwrite: boolean) => invoke<string>("signed_target", { path, overwrite }),
+  /** Usuwa oryginał po przeniesieniu podpisanego dokumentu do folderu podpisanych. */
+  removeMovedOriginal: (original: string, target: string) => invoke<void>("remove_moved_original", { original, target }),
   /** Wpis do dziennika podpisów (nic, gdy dziennik wyłączony). */
   logSignature: (entry: { output: string; signingTime: string }) => invoke<void>("log_signature", { entry }),
   setModel: (model: string) => invoke<void>("set_model", { model }),

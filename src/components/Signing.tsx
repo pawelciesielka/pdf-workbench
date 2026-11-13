@@ -291,6 +291,7 @@ export function BatchSign(props: {
   keepOriginals?: boolean;
 }) {
   const [overwrite, setOverwrite] = useState(false);
+  const [signedDir, setSignedDir] = useState<string | null>(null);
   const [items, setItems] = useState<(BatchItem | null)[] | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -310,8 +311,10 @@ export function BatchSign(props: {
     setItems(props.files.map(() => null));
     setRunning(true);
     const now = new Date();
-    const ow = !props.keepOriginals && (await api.getSettings().then((s) => s.signOverwrite, () => false));
+    const settings = await api.getSettings().catch(() => null);
+    const ow = !props.keepOriginals && !!settings?.signOverwrite;
     setOverwrite(ow);
+    setSignedDir(settings?.signedDir ?? null);
     try {
       await api.signFiles(
         {
@@ -340,8 +343,8 @@ export function BatchSign(props: {
         <h2>✍ {t("sign.batchTitle", { n: props.files.length })}</h2>
         <p className="hint">
           {running
-            ? t(overwrite ? "sign.batchRunningOverwrite" : "sign.batchRunning", { done, total: props.files.length })
-            : t(overwrite ? "sign.batchDoneOverwrite" : "sign.batchDone", { ok: done - failed, failed })}
+            ? t(signedDir ? "sign.batchRunningDir" : overwrite ? "sign.batchRunningOverwrite" : "sign.batchRunning", { done, total: props.files.length, dir: signedDir ?? "" })
+            : t(signedDir ? "sign.batchDoneDir" : overwrite ? "sign.batchDoneOverwrite" : "sign.batchDone", { ok: done - failed, failed, dir: signedDir ?? "" })}
         </p>
         {error && <div className="banner error">{error}</div>}
         <div className="sig-list">
@@ -358,7 +361,7 @@ export function BatchSign(props: {
                 {it?.error && <small className="sig-status">{it.error}</small>}
                 {it?.warning && <small>{it.warning}</small>}
                 {it?.output && (
-                  <small>
+                  <small title={it.output}>
                     → {it.output.split(/[\\/]/).pop()}{" "}
                     <button className="link-btn" onClick={() => props.onOpen(it.output!)}>
                       {t("sign.open")}

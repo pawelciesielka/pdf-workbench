@@ -1302,6 +1302,10 @@ pub struct BatchOptions {
     /// Podpisany plik zastępuje oryginał zamiast trafić obok jako „… (podpisany).pdf”.
     #[serde(default)]
     pub overwrite: bool,
+    /// Folder podpisanych dokumentów (z ustawień, wypełnia backend); podpisane pliki spoza niego
+    /// trafiają do niego (przy nadpisywaniu oryginał jest przenoszony).
+    #[serde(skip)]
+    pub signed_dir: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -1320,19 +1324,55 @@ pub struct BatchItem {
     pub error: Option<String>,
 }
 
-fn output_path(path: &str) -> String {
-    let p = std::path::Path::new(path);
-    let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "dokument".into());
-    let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+/// Pierwsza wolna nazwa w `dir`: `name(1)`, `name(2)`, …
+fn unique_in(dir: &std::path::Path, name: impl Fn(u32) -> String) -> String {
     let mut n = 1;
     loop {
-        let name = if n == 1 { format!("{stem} (podpisany).pdf") } else { format!("{stem} (podpisany {n}).pdf") };
-        let candidate = dir.join(name);
+        let candidate = dir.join(name(n));
         if !candidate.exists() {
             return candidate.to_string_lossy().to_string();
         }
         n += 1;
     }
+}
+
+fn stem_of(path: &str) -> String {
+    std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "dokument".into())
+}
+
+/// Plik leży w folderze `dir` (także w jego podfolderze).
+fn inside(dir: &str, path: &str) -> bool {
+    let norm = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_lowercase();
+    let file_dir = std::path::Path::new(path).parent().map(norm).unwrap_or_default();
+    let dir = norm(std::path::Path::new(dir));
+    let dir = dir.trim_end_matches(['\\', '/']);
+    file_dir == dir || file_dir.starts_with(&format!("{dir}\\")) || file_dir.starts_with(&format!("{dir}/"))
+}
+
+/// Gdzie zapisać podpisany `path`:
+/// - nadpisywanie — w miejscu, a gdy plik jest poza folderem podpisanych — w tym folderze pod tą
+///   samą nazwą (oryginał jest potem usuwany, czyli plik zostaje przeniesiony);
+/// - kopia — „… (podpisany).pdf” obok oryginału albo w folderze podpisanych, gdy oryginał jest poza nim.
+pub fn signed_target(path: &str, overwrite: bool, signed_dir: Option<&str>) -> String {
+    let dir = signed_dir.filter(|d| !inside(d, path)).map(std::path::PathBuf::from);
+    let stem = stem_of(path);
+    match (overwrite, dir) {
+        (true, None) => path.to_string(),
+        (true, Some(dir)) => unique_in(&dir, |n| if n == 1 { format!("{stem}.pdf") } else { format!("{stem} ({n}).pdf") }),
+        (false, dir) => {
+            let dir = dir.unwrap_or_else(|| std::path::Path::new(path).parent().map(|d| d.to_path_buf()).unwrap_or_default());
+            unique_in(&dir, |n| if n == 1 { format!("{stem} (podpisany).pdf") } else { format!("{stem} (podpisany {n}).pdf") })
+        }
+    }
+}
+
+/// Usuwa oryginał po przeniesieniu podpisanego pliku (tylko gdy kopia w nowym miejscu istnieje).
+pub fn remove_moved_original(original: &str, target: &str) -> Res<()> {
+    if original.eq_ignore_ascii_case(target) || !std::path::Path::new(target).is_file() {
+        return Ok(());
+    }
+    std::fs::remove_file(original)
+        .map_err(|e| format!("Podpisany plik zapisano w {target}, ale nie udało się usunąć oryginału {original}: {e}"))
 }
 
 /// Zastępuje plik nową treścią: zapis do pliku tymczasowego obok i podmiana, żeby przerwany zapis
@@ -1380,12 +1420,19 @@ fn sign_files_with(o: &BatchOptions, cert: &Cert, key: &Key, chain: &[Vec<u8>], 
                 opts.visible = Some(Visible { page, rect, lines: lines.clone() });
             }
             let (out, report) = sign_full(&bytes, &opts, cert, key, chain)?;
-            let target = if o.overwrite { replace_file(path, &out)?; path.clone() } else {
-                let target = output_path(path);
+            let target = signed_target(path, o.overwrite, o.signed_dir.as_deref());
+            let mut warning = report.warning;
+            if target == *path {
+                replace_file(path, &out)?;
+            } else {
                 std::fs::write(&target, &out).map_err(|e| format!("Nie można zapisać pliku: {e}"))?;
-                target
-            };
-            Ok(BatchItem { path: path.clone(), output: Some(target), level: Some(report.level), warning: report.warning, error: None })
+                if o.overwrite {
+                    if let Err(e) = remove_moved_original(path, &target) {
+                        warning = Some(warning.map(|w| format!("{w} ")).unwrap_or_default() + &e);
+                    }
+                }
+            }
+            Ok(BatchItem { path: path.clone(), output: Some(target), level: Some(report.level), warning, error: None })
         })()
         .unwrap_or_else(|e| BatchItem { path: path.clone(), output: None, level: None, warning: None, error: Some(e) });
         progress(i, &item);
@@ -1565,6 +1612,7 @@ mod tests {
             visible_lines: Some(vec!["Podpisany elektronicznie przez:".into(), "Test".into()]),
             placements: vec![None, Some(Placement { page: 99, rect: [50.0, 50.0, 250.0, 110.0] })],
             overwrite: false,
+            signed_dir: None,
         };
         let mut seen = Vec::new();
         let r = sign_files_with(&o, &cert, &key, &[], |i, _| seen.push(i)).unwrap();
@@ -1593,6 +1641,54 @@ mod tests {
     }
 
     #[test]
+    fn batch_signed_dir_moves_or_copies() {
+        let (cert, key) = ephemeral();
+        let root = std::env::temp_dir().join(format!("pdfwb-signeddir-{}", std::process::id()));
+        let (src, signed) = (root.join("przychodzace"), root.join("Podpisane"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(signed.join("2026")).unwrap();
+        let sample = concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/umowa-testowa.pdf");
+        let put = |p: &std::path::Path| {
+            std::fs::copy(sample, p).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let dir = Some(signed.to_string_lossy().to_string());
+        let run = |paths: Vec<String>, overwrite: bool| {
+            let o = BatchOptions { paths, sign: opts(1, false), visible_lines: None, placements: vec![], overwrite, signed_dir: dir.clone() };
+            sign_files_with(&o, &cert, &key, &[], |_, _| {}).unwrap()
+        };
+
+        // Nadpisywanie, plik spoza folderu: przeniesiony do folderu pod tą samą nazwą.
+        let a = put(&src.join("a.pdf"));
+        let r = run(vec![a.clone()], true);
+        assert_eq!(r[0].output.as_deref(), Some(signed.join("a.pdf").to_string_lossy().as_ref()), "{:?} {:?}", r[0].error, r[0].warning);
+        assert!(r[0].warning.is_none() && !std::path::Path::new(&a).exists());
+        // Ta sama nazwa jeszcze raz: kolizja w folderze → „a (2).pdf”.
+        let a2 = put(&src.join("a.pdf"));
+        assert!(run(vec![a2], true)[0].output.as_ref().unwrap().ends_with("a (2).pdf"));
+
+        // Nadpisywanie, plik już w podfolderze folderu podpisanych: zostaje na miejscu.
+        let b = put(&signed.join("2026").join("b.pdf"));
+        assert_eq!(run(vec![b.clone()], true)[0].output.as_deref(), Some(b.as_str()));
+
+        // Kopia, plik spoza folderu: „(podpisany)” w folderze, oryginał zostaje.
+        let c = put(&src.join("c.pdf"));
+        let r = run(vec![c.clone()], false);
+        assert_eq!(r[0].output.as_deref(), Some(signed.join("c (podpisany).pdf").to_string_lossy().as_ref()));
+        assert!(std::path::Path::new(&c).exists());
+
+        // Kopia, plik w folderze: obok oryginału.
+        let r = run(vec![b.clone()], false);
+        assert_eq!(r[0].output.as_deref(), Some(signed.join("2026").join("b (podpisany).pdf").to_string_lossy().as_ref()));
+
+        for f in [signed.join("a.pdf"), signed.join("2026").join("b.pdf"), signed.join("c (podpisany).pdf")] {
+            let s = inspect(&std::fs::read(&f).unwrap());
+            assert!(!s.is_empty() && s.iter().all(|x| x.intact), "{}", f.display());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn batch_overwrite_replaces_original() {
         let (cert, key) = ephemeral();
         let dir = std::env::temp_dir().join(format!("pdfwb-overwrite-{}", std::process::id()));
@@ -1600,7 +1696,7 @@ mod tests {
         let path = dir.join("umowa-testowa.pdf");
         std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../samples/umowa-testowa.pdf"), &path).unwrap();
         let p = path.to_string_lossy().to_string();
-        let o = BatchOptions { paths: vec![p.clone()], sign: opts(1, false), visible_lines: None, placements: vec![], overwrite: true };
+        let o = BatchOptions { paths: vec![p.clone()], sign: opts(1, false), visible_lines: None, placements: vec![], overwrite: true, signed_dir: None };
         let r = sign_files_with(&o, &cert, &key, &[], |_, _| {}).unwrap();
         assert_eq!(r[0].output.as_deref(), Some(p.as_str()), "{:?}", r[0].error);
         let s = inspect(&std::fs::read(&path).unwrap());

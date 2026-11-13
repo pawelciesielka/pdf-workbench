@@ -361,8 +361,17 @@ struct BatchProgress {
 
 /// Podpisanie wielu plików jednym certyfikatem; postęp na kanale po każdym pliku.
 #[tauri::command]
-async fn sign_files(state: State<'_, AppState>, options: signing::BatchOptions, on_progress: Channel<BatchProgress>) -> Res<Vec<signing::BatchItem>> {
-    let log_dir = sign_log_dir(&state.db.lock().unwrap());
+async fn sign_files(state: State<'_, AppState>, mut options: signing::BatchOptions, on_progress: Channel<BatchProgress>) -> Res<Vec<signing::BatchItem>> {
+    let (log_dir, signed) = {
+        let conn = state.db.lock().unwrap();
+        (sign_log_dir(&conn), signed_dir(&conn))
+    };
+    if let Some(d) = &signed {
+        if !std::path::Path::new(d).is_dir() {
+            return Err(format!("Folder podpisanych dokumentów nie istnieje: {d}"));
+        }
+    }
+    options.signed_dir = signed;
     tokio::task::spawn_blocking(move || {
         signing::sign_files(&options, |index, item| {
             let mut item = item.clone();
@@ -629,6 +638,8 @@ struct Settings {
     sign_overwrite: bool,
     /// Folder dziennika podpisów (`dziennik-podpisow.md`); brak — dziennik wyłączony.
     sign_log_dir: Option<String>,
+    /// Folder podpisanych dokumentów; brak — podpisane pliki zostają obok oryginałów.
+    signed_dir: Option<String>,
 }
 
 #[tauri::command]
@@ -640,7 +651,36 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
         api_key_source: keys::load().map(|(_, s)| s.to_string()),
         sign_overwrite: db::get_setting(&conn, "signOverwrite").as_deref() == Some("1"),
         sign_log_dir: sign_log_dir(&conn),
+        signed_dir: signed_dir(&conn),
     }
+}
+
+fn signed_dir(conn: &rusqlite::Connection) -> Option<String> {
+    db::get_setting(conn, "signedDir").filter(|d| !d.trim().is_empty())
+}
+
+#[tauri::command]
+fn set_signed_dir(state: State<'_, AppState>, dir: Option<String>) -> Res<()> {
+    let conn = state.db.lock().unwrap();
+    db::set_setting(&conn, "signedDir", dir.as_deref().unwrap_or("")).map_err(err)
+}
+
+/// Gdzie zapisać podpisany dokument (z uwzględnieniem folderu podpisanych z ustawień).
+#[tauri::command]
+fn signed_target(state: State<'_, AppState>, path: String, overwrite: bool) -> Res<String> {
+    let dir = signed_dir(&state.db.lock().unwrap());
+    if let Some(d) = &dir {
+        if !std::path::Path::new(d).is_dir() {
+            return Err(format!("Folder podpisanych dokumentów nie istnieje: {d}"));
+        }
+    }
+    Ok(signing::signed_target(&normalize_path(&path), overwrite, dir.as_deref()))
+}
+
+/// Po przeniesieniu podpisanego dokumentu do folderu podpisanych — usunięcie oryginału.
+#[tauri::command]
+fn remove_moved_original(original: String, target: String) -> Res<()> {
+    signing::remove_moved_original(&normalize_path(&original), &normalize_path(&target))
 }
 
 fn sign_log_dir(conn: &rusqlite::Connection) -> Option<String> {
@@ -1056,6 +1096,9 @@ pub fn run() {
             get_settings,
             set_sign_overwrite,
             set_sign_log_dir,
+            set_signed_dir,
+            signed_target,
+            remove_moved_original,
             log_signature,
             set_model,
             set_api_key,

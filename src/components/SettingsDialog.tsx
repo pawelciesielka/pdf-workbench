@@ -103,6 +103,35 @@ export function SettingsDialog({ settings, updates, theme, onTheme, onChanged, o
         </label>
         <p className="hint">{t("settings.signOverwriteHint")}</p>
 
+        <label>{t("settings.signedDir")}</label>
+        <div className="row">
+          <input readOnly value={settings.signedDir ?? t("settings.signedDirOff")} title={settings.signedDir ?? ""} />
+          <button
+            onClick={async () => {
+              const dir = await openDialog({ directory: true, multiple: false, defaultPath: settings.signedDir ?? undefined });
+              if (typeof dir !== "string") return;
+              await api.setSignedDir(dir);
+              onChanged();
+            }}
+          >
+            {t("settings.signLogPick")}
+          </button>
+          {settings.signedDir && (
+            <>
+              <button onClick={() => api.revealInExplorer(settings.signedDir!).catch((e) => setMsg(errorText(e)))}>{t("settings.signedDirOpen")}</button>
+              <button
+                onClick={async () => {
+                  await api.setSignedDir(null);
+                  onChanged();
+                }}
+              >
+                {t("settings.signLogDisable")}
+              </button>
+            </>
+          )}
+        </div>
+        <p className="hint">{t("settings.signedDirHint")}</p>
+
         <label>{t("settings.signLog")}</label>
         <div className="row">
           <input readOnly value={settings.signLogDir ?? t("settings.signLogOff")} title={settings.signLogDir ?? ""} />

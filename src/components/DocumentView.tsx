@@ -425,15 +425,25 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
   const signDocument = async (choice: SignChoice, place?: { page: number; rect: Rect }) => {
     const d = docRef.current;
     if (!d) return;
-    const overwrite = await api.getSettings().then((s) => s.signOverwrite, () => false);
-    const target = overwrite
-      ? info.path
-      : await saveDialog({
-          title: t("sign.saveTitle"),
-          defaultPath: info.path.replace(/\.pdf$/i, " (podpisany).pdf"),
-          filters: [{ name: "PDF", extensions: ["pdf"] }],
-        });
+    const settings = await api.getSettings().catch(() => null);
+    const overwrite = !!settings?.signOverwrite;
+    let target: string | null;
+    try {
+      // Nadpisywanie albo folder podpisanych — miejsce wynika z ustawień, bez pytania.
+      target =
+        overwrite || settings?.signedDir
+          ? await api.signedTarget(info.path, overwrite)
+          : await saveDialog({
+              title: t("sign.saveTitle"),
+              defaultPath: info.path.replace(/\.pdf$/i, " (podpisany).pdf"),
+              filters: [{ name: "PDF", extensions: ["pdf"] }],
+            });
+    } catch (e) {
+      props.onToast(errorText(e));
+      return;
+    }
     if (!target) return;
+    const moving = overwrite && target.toLowerCase() !== info.path.toLowerCase();
     setBusy(t("sign.signing"));
     try {
       const source = dirty || !diskBytes.current ? await d.saveDocument() : diskBytes.current;
@@ -452,7 +462,11 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
       const level = t("sign.level", { level: report.level === "B-LTA" ? "PAdES-LTA" : `PAdES-${report.level}` });
       const res = await api.saveDocument(signed, { path: target, parentHash: info.hash, backup: false });
       if (res.document.path.toLowerCase() === info.path.toLowerCase()) props.onSaved(res.document, `${t("sign.done")} ${level}`);
-      else {
+      else if (moving) {
+        // Nadpisanie z przeniesieniem do folderu podpisanych: ta karta pokazuje teraz nowy plik.
+        props.onSaved(res.document, `${t("sign.doneMoved", { path: res.document.path })} ${level}`);
+        await api.removeMovedOriginal(info.path, res.document.path).catch((e) => props.onToast(errorText(e), "error"));
+      } else {
         props.onOpenNew(res.document);
         props.onToast(`${t("sign.doneNew", { name: res.document.name })} ${level}`, "info");
       }
