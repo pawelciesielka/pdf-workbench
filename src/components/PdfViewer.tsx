@@ -11,13 +11,14 @@ type Bus = InstanceType<Mod["EventBus"]>;
 // Menedżer edytorów adnotacji pdf.js (typ wewnętrzny biblioteki).
 type UiManager = { undo(): void; redo(): void; highlightSelection(method?: string): void };
 
-export type EditorMode = "none" | "highlight" | "freetext" | "ink" | "stamp" | "redact" | "objects" | "addtext" | "signbox";
+export type EditorMode = "none" | "hand" | "highlight" | "freetext" | "ink" | "stamp" | "redact" | "objects" | "addtext" | "signbox";
 
 /** Tryby obsługiwane przez naszą nakładkę (pdf.js w trybie bez edytora). */
 const OVERLAY_MODES = new Set<EditorMode>(["redact", "objects", "addtext", "signbox"]);
 
 const EDITOR_TYPES: Record<Exclude<EditorMode, "redact" | "objects" | "addtext" | "signbox">, number> = {
   none: pdfjsLib.AnnotationEditorType.NONE,
+  hand: pdfjsLib.AnnotationEditorType.NONE,
   highlight: pdfjsLib.AnnotationEditorType.HIGHLIGHT,
   freetext: pdfjsLib.AnnotationEditorType.FREETEXT,
   ink: pdfjsLib.AnnotationEditorType.INK,
@@ -328,6 +329,63 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Rączka: przeciąganie przesuwa powiększoną stronę. W trybie „hand” lewym przyciskiem,
+  // w każdym trybie środkowym przyciskiem myszy.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let drag: { id: number; x: number; y: number; left: number; top: number } | null = null;
+    let moved = false;
+    const onDown = (e: PointerEvent) => {
+      const hand = cb.current.editorMode === "hand" && e.button === 0;
+      if (!hand && e.button !== 1) return;
+      if (hand && (e.target as HTMLElement).closest(".mark-remove")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight) return; // nie ma czego przesuwać
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
+      moved = false;
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("panning");
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      el.scrollLeft = drag.left - dx;
+      el.scrollTop = drag.top - dy;
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag = null;
+      el.classList.remove("panning");
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    };
+    // Po przeciągnięciu nie otwieramy linku spod kursora (kliknięcie/środkowe kliknięcie).
+    // Nasłuch na oknie w fazie przechwytywania działa przed obsługą linków w podglądzie.
+    const onClick = (e: MouseEvent) => {
+      if (!moved || !el.contains(e.target as Node)) return;
+      moved = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("pointerdown", onDown, { capture: true });
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+    window.addEventListener("click", onClick, { capture: true });
+    window.addEventListener("auxclick", onClick, { capture: true });
+    return () => {
+      el.removeEventListener("pointerdown", onDown, { capture: true });
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("click", onClick, { capture: true });
+      window.removeEventListener("auxclick", onClick, { capture: true });
+    };
   }, []);
 
   /** Strona pod punktem ekranu i jej prostokąt. */

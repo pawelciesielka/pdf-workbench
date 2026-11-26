@@ -413,6 +413,17 @@ textarea:focus {
      ponad 50, czyli nad oknami dialogowymi. Własny kontekst nakładania trzyma je w podglądzie. */
   isolation: isolate;
 }
+/* Rączka: przeciąganie przesuwa stronę zamiast zaznaczać tekst. */
+.pdf-container.mode-hand,
+.pdf-container.mode-hand * {
+  cursor: grab !important;
+  user-select: none;
+}
+.pdf-container.panning,
+.pdf-container.panning * {
+  cursor: grabbing !important;
+  user-select: none;
+}
 .pdfViewer .page {
   margin: 12px auto;
   border: none;

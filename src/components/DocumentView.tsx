@@ -61,6 +61,7 @@ const sameBytes = (a: Uint8Array | null, b: Uint8Array | null) => !!a && !!b && 
 
 const MODES: { mode: EditorMode; icon: string; label: string }[] = [
   { mode: "none", icon: "🖱", label: "edit.select" },
+  { mode: "hand", icon: "✋", label: "edit.hand" },
   { mode: "objects", icon: "⬚", label: "edit.objects" },
   { mode: "addtext", icon: "A+", label: "edit.addText" },
   { mode: "highlight", icon: "🖍", label: "edit.highlight" },
@@ -69,6 +70,9 @@ const MODES: { mode: EditorMode; icon: string; label: string }[] = [
   { mode: "stamp", icon: "🖼", label: "edit.image" },
   { mode: "redact", icon: "■", label: "edit.redact" },
 ];
+
+/** Tryby samego oglądania — dostępne także w podpisanym (zablokowanym) dokumencie. */
+const VIEW_MODES = new Set<EditorMode>(["none", "hand"]);
 
 function unionRect(rects: Rect[]): Rect {
   return [Math.min(...rects.map((r) => r[0])), Math.min(...rects.map((r) => r[1])), Math.max(...rects.map((r) => r[2])), Math.max(...rects.map((r) => r[3]))];
@@ -246,7 +250,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
 
   // Podpisany dokument: z narzędzi edycji zostaje tylko zaznaczanie.
   useEffect(() => {
-    if (locked) setEditorMode((m) => (m === "none" || m === "signbox" ? m : "none"));
+    if (locked) setEditorMode((m) => (VIEW_MODES.has(m) || m === "signbox" ? m : "none"));
   }, [locked]);
 
   /** Edycja strukturalna: zapamiętuje stan do cofnięcia, wykonuje operację i ładuje wynik. */
@@ -721,9 +725,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
             <button
               key={m.mode}
               className={`icon-btn ${editorMode === m.mode ? "on" : ""}`}
-              title={locked && m.mode !== "none" ? t("sign.lockedHint") : t(m.label as "edit.select")}
+              title={locked && !VIEW_MODES.has(m.mode) ? t("sign.lockedHint") : t(m.label as "edit.select")}
               onClick={() => setEditorMode(m.mode)}
-              disabled={!doc || !!busy || (locked && m.mode !== "none")}
+              disabled={!doc || !!busy || (locked && !VIEW_MODES.has(m.mode))}
             >
               {m.icon}
             </button>
