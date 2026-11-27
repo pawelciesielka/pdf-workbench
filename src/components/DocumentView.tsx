@@ -19,6 +19,7 @@ import {
   type Rect,
 } from "../lib/editing";
 import { extractPageTexts, loadPdf, type PDFDocumentProxy } from "../lib/pdf";
+import { printDocument } from "../lib/print";
 import { ChatPanel, type ChatPanelHandle } from "./ChatPanel";
 import { changesForChat, CompareView } from "./CompareView";
 import { HIGHLIGHT_COLORS, PdfViewer, type EditorMode, type PdfViewerHandle, type SelectionInfo } from "./PdfViewer";
@@ -35,6 +36,7 @@ export interface DocumentViewHandle {
   undo(): void;
   redo(): void;
   save(asNew?: boolean): void;
+  print(): void;
   showCitation(page: number, text: string): void;
   runTool(call: ToolCall): Promise<ToolOutcome>;
   isDirty(): boolean;
@@ -383,6 +385,19 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     run(t("pages.inserting"), (d, b) => insertPdf(d, b, other, afterPage));
   };
 
+  const print = async () => {
+    const d = docRef.current;
+    if (!d || busy) return;
+    setMenuOpen(false);
+    try {
+      await printDocument(d, progress(t("print.preparing")));
+    } catch (e) {
+      props.onToast(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const progress = (label: string) => (done: number, total: number) => setBusy(`${label} ${Math.min(done + 1, total)}/${total}…`);
 
   const runOcr = (pages: number[]) =>
@@ -578,6 +593,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
     undo,
     redo,
     save,
+    print,
     showCitation: (p, text) => viewerRef.current?.showCitation(p, text),
     runTool,
     isDirty: () => dirty,
@@ -796,6 +812,9 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
         <button className={`save-btn ${dirty ? "dirty" : ""}`} title={t("edit.saveHint")} disabled={!!busy || !doc} onClick={() => save(false)}>
           💾 {t("edit.save")}
         </button>
+        <button className="icon-btn" title={t("print.button")} disabled={!!busy || !doc} onClick={print}>
+          🖨
+        </button>
         <button className="icon-btn" title={t("sign.button")} disabled={!!busy || !doc} onClick={() => setDialog("sign")}>
           ✍
         </button>
@@ -806,6 +825,7 @@ export const DocumentView = forwardRef<DocumentViewHandle, Props>(function Docum
           {menuOpen && (
             <div className="menu" onMouseLeave={() => setMenuOpen(false)}>
               <button onClick={() => (setMenuOpen(false), save(true))}>{t("edit.saveAs")}</button>
+              <button disabled={!doc} onClick={print}>🖨 {t("print.menu")}</button>
               <button onClick={() => (setMenuOpen(false), api.revealInExplorer(info.path).catch((e) => props.onToast(errorText(e))))}>
                 {t("edit.reveal")}
               </button>

@@ -1832,3 +1832,40 @@ button.danger:hover:not(:disabled) {
   max-height: calc(100vh - 32px);
   overflow-y: auto;
 }
+
+/* Drukowanie Dokumentu (src/lib/print.ts): przy wydruku widać tylko wyrenderowane strony. */
+#print-root {
+  display: none;
+}
+@media print {
+  body.printing > *:not(#print-root) {
+    display: none !important;
+  }
+  html:has(body.printing),
+  body.printing {
+    height: auto !important;
+    background: #fff !important;
+    margin: 0;
+    overflow: visible !important;
+  }
+  body.printing #print-root {
+    display: block;
+  }
+  .print-page {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    break-after: page;
+    overflow: hidden;
+  }
+  .print-page:last-child {
+    break-after: auto;
+  }
+  .print-page img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+}

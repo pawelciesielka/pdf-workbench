@@ -247,6 +247,9 @@ export default function App() {
       } else if (k === "s" && view) {
         stop();
         view.save(e.shiftKey);
+      } else if (k === "p" && view) {
+        stop();
+        view.print();
       } else if (k === "z" && view && !typing) {
         stop();
         if (e.shiftKey) view.redo();
