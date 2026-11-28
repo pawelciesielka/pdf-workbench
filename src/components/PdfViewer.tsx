@@ -204,10 +204,13 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(p
       // i środkowym przyciskiem, które w WebView otworzyłyby osobne okno bez menu.
       const openExternalLink = (e: MouseEvent) => {
         const a = (e.target as HTMLElement).closest?.<HTMLAnchorElement>(".annotationLayer a[href]");
-        if (!a || !/^(https?|mailto):/i.test(a.href)) return;
+        // Atrybut, nie właściwość `href`: linki wewnętrzne (spis treści) mają `#…`, a `a.href`
+        // zwraca je jako pełny adres https://tauri.localhost/#… i trafiałyby do przeglądarki.
+        const href = a?.getAttribute("href") ?? "";
+        if (!a || !/^(https?|mailto):/i.test(href)) return;
         e.preventDefault();
         e.stopPropagation();
-        if (e.type === "click" || e.button === 1) api.openLink(a.href).catch(() => {});
+        if (e.type === "click" || e.button === 1) api.openLink(href).catch(() => {});
       };
       containerRef.current.addEventListener("click", openExternalLink, { capture: true });
       containerRef.current.addEventListener("auxclick", openExternalLink, { capture: true });
